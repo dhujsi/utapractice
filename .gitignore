@@ -1,0 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# User Data
+data/
+
+# Temporary files
+static/
+
+# IDE config
+.vscode/

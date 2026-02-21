@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  utapractice:
+    build: .
+    container_name: utapractice
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data/songs:/app/songs
+      - ./data/songs_archived:/app/songs_archived
+      - ./data/song_db.json:/app/song_db.json
+    restart: always
