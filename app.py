@@ -89,11 +89,6 @@ song_db = load_db()
 with st.sidebar:
     st.title("练歌房")
     
-    # 清理static目录下的临时文件
-    files_in_static = os.listdir(STATIC_DIR)
-    for f in files_in_static:
-        if f.startswith("temp_"):
-            os.remove(os.path.join(STATIC_DIR, f))
 
     st.header("曲库")
     filter_status = st.radio("筛选", ("全部", "已学会", "未学会"), horizontal=True, label_visibility="collapsed")
@@ -108,6 +103,12 @@ with st.sidebar:
     selected_song_name_from_box = st.selectbox("选择歌曲:", filtered_song_names, index=current_index, placeholder="请选择一首歌曲开始...")
 
     if selected_song_name_from_box and selected_song_name_from_box != st.session_state.selected_song:
+        # 在切换歌曲的时候，清理掉旧的临时文件
+        files_in_static = os.listdir(STATIC_DIR)
+        for f in files_in_static:
+            if f.startswith("temp_"):
+                os.remove(os.path.join(STATIC_DIR, f))
+
         st.session_state.selected_song = selected_song_name_from_box
         st.rerun()
 
@@ -178,7 +179,12 @@ with st.sidebar:
             for f in uploaded_files:
                 with open(os.path.join(SONG_DIR, f.name), "wb") as out_file: out_file.write(f.getvalue())
                 st.success(f"✅ 已添加: {f.name}")
-            st.cache_data.clear(); st.rerun()
+            
+            # 清理缓存，让曲库能刷新
+            st.cache_data.clear()
+            # 清空上传组件里的文件列表，防止重复处理
+            st.session_state.song_uploader = [] 
+            # 删掉 st.rerun()，让 Streamlit 自然刷新
 
 # --- 主界面 ---
 if st.session_state.selected_song and st.session_state.get('audio_b64_data'):
