@@ -11,3 +11,10 @@ services:
       - ./data/songs_archived:/app/songs_archived
       - ./data/song_db.json:/app/song_db.json
     restart: always
+    labels:
+      watchcow.enable: "true"
+      watchcow.display_name: "练歌" # 对应应用名
+      watchcow.service_port: "8501" # 对应端口号
+      watchcow.protocol: "http"
+      watchcow.path: "/"
+
