@@ -113,6 +113,7 @@ with st.sidebar:
         st.rerun()
 
     if st.session_state.selected_song:
+        
         selected_song_name = st.session_state.selected_song
         song_files = all_songs[selected_song_name]
         song_info = song_db.setdefault(selected_song_name, {})
@@ -150,12 +151,28 @@ with st.sidebar:
         
         with st.expander("设置 & 备注", expanded=True):
             display_mode = st.selectbox("歌词显示模式:", ("原文 + 译文", "仅原文", "仅译文"), key=f"mode_{selected_song_name}")
+            lyric_align = st.radio(
+                            "歌词对齐:",
+                            ("居左", "居中", "居右"),
+                            horizontal=True,
+                            key=f"align_{selected_song_name}",
+                            # 如果之前没设置过，就默认居中
+                            index=1 
+                        )
             new_range = st.text_input("音域备注:", value=song_info.get("range", ""), key=f"range_{selected_song_name}")
             new_learned = st.checkbox("已学会", value=song_info.get("learned", False), key=f"learned_{selected_song_name}")
 
             if (new_range != song_info.get("range", "") or new_learned != song_info.get("learned", False)):
                 song_info['range'] = new_range; song_info['learned'] = new_learned; save_db(song_db)
                 st.toast("备注已保存!", icon="✔️")
+    # 初始化编辑模式的状态
+            if 'edit_mode' not in st.session_state:
+                st.session_state.edit_mode = False
+
+            # 添加一个编辑按钮
+            if st.button("📝 编辑歌词", use_container_width=True):
+                st.session_state.edit_mode = not st.session_state.edit_mode # 点一下切换编辑/查看模式
+                st.rerun()
 
             if st.button("🗑️ 删除这首歌", use_container_width=True, type="secondary"):
                 st.session_state.confirm_delete = True
@@ -188,140 +205,220 @@ with st.sidebar:
 
 # --- 主界面 ---
 if st.session_state.selected_song and st.session_state.get('audio_b64_data'):
-    selected_song_name = st.session_state.selected_song
-    song_files = all_songs[selected_song_name]
-    with open(song_files['lyrics_path'], 'r', encoding='utf-8') as f:
-        lyrics_data = json.load(f)
+    # ... 在 if st.session_state.selected_song ... 之后
 
-    display_mode = st.session_state.get(f"mode_{selected_song_name}", "原文 + 译文")
-    
-    lines_html = []
-    # 我们用 enumerate 来拿到索引，方便找下一句歌词的时间
-    for i, line in enumerate(lyrics_data):
-        original_html = line.get('original_html', '')
-        translation_text = line.get('translation', '')
-        display_text = ""
-        if display_mode == "仅原文": display_text = original_html
-        elif display_mode == "仅译文": display_text = translation_text
-        else: display_text = f"{original_html}<br><small style='color: #999;'>{translation_text}</small>"
+    # 根据是否在编辑模式，决定显示什么
+    if st.session_state.edit_mode:
+        st.subheader(f"正在编辑: {selected_song_name}")
         
-        start_time = line["time"]
-        # 下一句歌词的开始时间，就是当前这句的结束时间。最后一句就给个超大的数。
-        end_time = lyrics_data[i + 1]["time"] if i + 1 < len(lyrics_data) else 99999
+        try:
+            with open(song_files['lyrics_path'], 'r', encoding='utf-8') as f:
+                # 把整个json文件内容读出来，格式化一下，放到文本框里
+                current_lyrics_str = json.dumps(json.load(f), indent=2, ensure_ascii=False)
+            
+            edited_lyrics_str = st.text_area(
+                "在此修改歌词JSON内容 (请注意保持JSON格式正确！)",
+                value=current_lyrics_str,
+                height=600
+            )
 
-        # 在 div 里加上 data-start-time 和 data-end-time
-        line_html = f'<div class="lyric-line" data-start-time="{start_time}" data-end-time="{end_time}" onclick="seekAudio({start_time})">{display_text}</div>'
-        lines_html.append(line_html)
+            c1, c2 = st.columns(2)
+            if c1.button("💾 保存修改", type="primary"):
+                try:
+                    # 尝试解析修改后的文本，看看是不是合法的JSON
+                    new_lyrics_data = json.loads(edited_lyrics_str)
+                    # 如果合法，就写回文件
+                    with open(song_files['lyrics_path'], 'w', encoding='utf-8') as f:
+                        json.dump(new_lyrics_data, f, indent=2, ensure_ascii=False)
+                    
+                    st.success("歌词已保存！")
+                    st.cache_data.clear() # 清除缓存，让下次显示时加载新内容
+                    st.session_state.edit_mode = False # 退出编辑模式
+                    st.rerun()
+                except json.JSONDecodeError:
+                    st.error("保存失败！你修改后的内容不是一个有效的JSON格式，请检查。")
+            
+            if c2.button("❌ 取消"):
+                st.session_state.edit_mode = False
+                st.rerun()
+
+        except Exception as e:
+            st.error(f"读取歌词文件时出错: {e}")
+
+    else: # 如果不在编辑模式，就正常显示播放器和歌词
+        # ... 这里接上你原来显示 components.html 的那一大段代码 ...
+        selected_song_name = st.session_state.selected_song
+        song_files = all_songs[selected_song_name]
+        with open(song_files['lyrics_path'], 'r', encoding='utf-8') as f:
+            lyrics_data = json.load(f)
+
+        display_mode = st.session_state.get(f"mode_{selected_song_name}", "原文 + 译文")
         
-    lyrics_block = "".join(lines_html)
-    audio_src = st.session_state['audio_b64_data']
-    
-    # --- 这里是修改点 ---
-    # 我把那个错误的 key 参数删掉了
+        lines_html = []
+        # 我们用 enumerate 来拿到索引，方便找下一句歌词的时间
+        for i, line in enumerate(lyrics_data):
+            original_html = line.get('original_html', '')
+            translation_text = line.get('translation', '')
+            display_text = ""
+            if display_mode == "仅原文": display_text = original_html
+            elif display_mode == "仅译文": display_text = translation_text
+            else: display_text = f"{original_html}<br><small style='color: #999;'>{translation_text}</small>"
+            
+            start_time = line["time"]
+            # 下一句歌词的开始时间，就是当前这句的结束时间。最后一句就给个超大的数。
+            end_time = lyrics_data[i + 1]["time"] if i + 1 < len(lyrics_data) else 99999
+
+            # 在 div 里加上 data-start-time 和 data-end-time
+            line_html = f'<div class="lyric-line" data-start-time="{start_time}" data-end-time="{end_time}" onclick="seekAudio({start_time})">{display_text}</div>'
+            lines_html.append(line_html)
+            
+        lyrics_block = "".join(lines_html)
+        audio_src = st.session_state['audio_b64_data']
+        
         # --- 这里是修改点 ---
-    # 把整个 html_content 变量的内容替换成下面的
-    html_content = f"""
+        # 我把那个错误的 key 参数删掉了
+            # --- 这里是修改点 ---
+        # 把整个 html_content 变量的内容替换成下面的
+          # --- 这里是修改点 ---
+        # 把整个 html_content 变量的内容替换成下面的
+        align_class_map = {"居左": "align-left", "居中": "align-center", "居右": "align-right"}
+        css_align_class = align_class_map.get(lyric_align, "align-center")
+        html_content = f"""
     <style>
-        .lyric-container {{ 
-            font-family: sans-serif; 
-            padding-bottom: 80px; 
+        html, body {{
+            height: 100%; margin: 0; padding: 0;
+            overflow: hidden; display: flex;
+            flex-direction: column; font-family: sans-serif;
         }}
-        .lyric-line {{ 
-            padding: 8px 12px; 
-            margin: 4px 0; 
-            border-radius: 8px; 
-            cursor: pointer; 
-            transition: background-color 0.2s, color 0.2s; /* 过渡效果更平滑 */
-            line-height: 2; 
+        .lyric-container {{
+            flex-grow: 1; overflow-y: auto; padding: 10px;
         }}
-        .lyric-line:hover {{ background-color: #f0f2f6; }}
-        ruby rt {{ font-size: 0.7em; color: #909090; }}
+        /* --- 核心修改在这里 --- */
+        /* 我们不再直接给 .lyric-line 设置 text-align */
+        .lyric-line {{
+            padding: 8px 12px; margin: 4px 0; border-radius: 8px;
+            cursor: pointer; transition: background-color 0.2s, color 0.2s;
+            line-height: 2;
+        }}
+        /* 而是根据父容器的 class 来决定对齐方式 */
+        .lyric-container.align-left .lyric-line {{ text-align: left; }}
+        .lyric-container.align-center .lyric-line {{ text-align: center; }}
+        .lyric-container.align-right .lyric-line {{ text-align: right; }}
 
-        /* 这是新增的样式，给当前播放的歌词行 */
-        .active-lyric {{
-            background-color: #e0e0e0; /* 你说的灰色背景 */
-            color: #000;
+        .lyric-line:hover {{ background-color: #f0f2f6; }}
+        ruby rt {{ font-size: 0.7em; color: #B0B0B0; }}
+        .active-lyric {{ background-color: #e0e0e0; color: #000; }}
+        .audio-player-desktop {{
+            flex-shrink: 0; padding: 10px;
+            background-color: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(10px);
+            border-top: 1px solid #eee;
         }}
-        
-        .audio-player-sticky-container {{ 
-            position: fixed;
-            bottom: 0px;
-            left: 20px;
-            right: 20px;
-            padding: 10px;
-            background-color: rgba(255, 255, 255, 0.8); /* 加个半透明背景，免得和歌词重叠时看不清 */
-            backdrop-filter: blur(10px); /* 毛玻璃效果 */
-            -webkit-backdrop-filter: blur(10px);
-            border-radius: 10px;
-            z-index: 100;
+        .audio-player-desktop audio {{ width: 100%; }}
+        .mobile-player-container {{
+            display: none; position: fixed; bottom: 30px; right: 20px;
+            z-index: 101; align-items: flex-end; gap: 10px;
         }}
-        .audio-player-sticky-container audio {{ width: 100%; }}
+        .audio-player-mobile {{
+            width: 60px; height: 60px; background-color: rgba(50, 50, 50, 0.7);
+            border-radius: 50%; box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            color: white; display: flex; align-items: center; justify-content: center;
+            font-size: 24px; cursor: pointer; user-select: none;
+        }}
+        #speed-toggle-button {{
+            width: 40px; height: 40px; background-color: rgba(80, 80, 80, 0.7);
+            border-radius: 50%; color: white; display: flex; align-items: center;
+            justify-content: center; font-size: 12px; cursor: pointer; user-select: none;
+        }}
         @media (max-width: 600px) {{
-            .audio-player-sticky-container {{
-                left: 10px;  /* 两边边距减小到 10px */
-                right: 10px;
-            }}
+            .audio-player-desktop {{ display: none; }}
+            .mobile-player-container {{ display: flex; }}
+            .lyric-container {{ padding-bottom: 80px; }}
         }}
     </style>
-    
-    <div class="audio-player-sticky-container">
+
+    <!-- 把我们生成的 class 加到这个 div 上 -->
+    <div class="lyric-container {css_align_class}" id="lyric-container">{lyrics_block}</div>
+
+    <div class="audio-player-desktop">
         <audio id="main-audio" controls src="{audio_src}"></audio>
     </div>
-    
-    <div class="lyric-container">{lyrics_block}</div>
+    <div class="mobile-player-container">
+        <div id="speed-toggle-button">1.0x</div>
+        <div class="audio-player-mobile" id="mobile-player">
+            <div id="mobile-player-icon">▶</div>
+        </div>
+    </div>
 
     <script>
+        // script部分不用动
         const audioPlayer = document.getElementById('main-audio');
-        const lyricLines = document.querySelectorAll('.lyric-line');
+        const mobilePlayer = document.getElementById('mobile-player');
+        const mobilePlayerIcon = document.getElementById('mobile-player-icon');
+        const speedToggleButton = document.getElementById('speed-toggle-button');
+        const lyricContainer = document.getElementById('lyric-container');
+        const lyricLines = lyricContainer.querySelectorAll('.lyric-line');
         let currentActiveLine = null;
-
-        function seekAudio(time) {{
-            if (audioPlayer) {{
-                audioPlayer.currentTime = time;
-                audioPlayer.play();
+        function playAudio() {{ audioPlayer.play(); }}
+        function pauseAudio() {{ audioPlayer.pause(); }}
+        function togglePlayPause() {{ audioPlayer.paused ? playAudio() : pauseAudio(); }}
+        function seekAudio(time) {{ if (audioPlayer) {{ audioPlayer.currentTime = time; playAudio(); }} }}
+        function highlightAndScroll(line) {{
+            if (line !== currentActiveLine) {{
+                if (currentActiveLine) currentActiveLine.classList.remove('active-lyric');
+                line.classList.add('active-lyric');
+                currentActiveLine = line;
+                line.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
             }}
         }}
-
-        // 监听播放器时间更新的事件
         audioPlayer.addEventListener('timeupdate', function() {{
             const currentTime = audioPlayer.currentTime;
-            
-            // 遍历所有歌词行
             for (const line of lyricLines) {{
                 const startTime = parseFloat(line.dataset.startTime);
                 const endTime = parseFloat(line.dataset.endTime);
-
-                // 判断当前时间是否在某句歌词的时间范围内
                 if (currentTime >= startTime && currentTime < endTime) {{
-                    // 如果这句不是已经高亮的那句
-                    if (line !== currentActiveLine) {{
-                        // 先移除之前那句的高亮
-                        if (currentActiveLine) {{
-                            currentActiveLine.classList.remove('active-lyric');
-                        }}
-                        
-                        // 给当前行加上高亮
-                        line.classList.add('active-lyric');
-                        currentActiveLine = line;
-                        
-                        // 把它滚动到视野中央，效果是 'smooth' 平滑滚动
-                        line.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                    }}
-                    // 找到了就不用再找了
-                    return; 
+                    highlightAndScroll(line);
+                    return;
                 }}
             }}
-
-            // 如果循环结束都没找到匹配的（比如间奏），就取消所有高亮
-            if (currentActiveLine) {{
-                 currentActiveLine.classList.remove('active-lyric');
-                 currentActiveLine = null;
+            if (currentActiveLine) {{ currentActiveLine.classList.remove('active-lyric'); currentActiveLine = null; }}
+        }});
+        audioPlayer.addEventListener('play', () => mobilePlayerIcon.innerHTML = '❚❚');
+        audioPlayer.addEventListener('pause', () => mobilePlayerIcon.innerHTML = '▶');
+        mobilePlayer.addEventListener('click', togglePlayPause);
+        speedToggleButton.addEventListener('click', function() {{
+            const currentRate = audioPlayer.playbackRate;
+            let newRate = 1.0;
+            if (currentRate === 1.0) {{ newRate = 0.75; }}
+            else if (currentRate === 0.75) {{ newRate = 0.5; }}
+            else {{ newRate = 1.0; }}
+            audioPlayer.playbackRate = newRate;
+            speedToggleButton.innerText = newRate.toFixed(2).replace('.00', '') + 'x';
+        }});
+        document.addEventListener('keydown', function(e) {{
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+            if (e.code === 'Space') {{ e.preventDefault(); togglePlayPause(); }}
+            if (e.code === 'ArrowDown' && currentActiveLine) {{
+                const nextLine = currentActiveLine.nextElementSibling;
+                if (nextLine && nextLine.classList.contains('lyric-line')) seekAudio(parseFloat(nextLine.dataset.startTime));
+            }}
+            if (e.code === 'ArrowUp' && currentActiveLine) {{
+                const prevLine = currentActiveLine.previousElementSibling;
+                if (prevLine && prevLine.classList.contains('lyric-line')) seekAudio(parseFloat(prevLine.dataset.startTime));
             }}
         }});
     </script>
     """
-    components.html(html_content, height=800, scrolling=True)
 
+        st.markdown("""
+        <style>
+            iframe[title="streamlit.components.v1.html"] {
+                height: 85vh !important;
+            }
+        </style>
+        """, unsafe_allow_html=True)
+       
+        components.html(html_content, height=740, scrolling=True) # height 和 scrolling 在这里影响不大，但留着也行
 
 elif st.session_state.selected_song:
     st.info("音频正在加载中，请稍候...")
