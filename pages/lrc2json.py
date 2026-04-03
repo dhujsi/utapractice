@@ -84,7 +84,10 @@ def call_ark_model(lyrics_with_furigana_or_jyutping: str, lrc_or_timed_text: str
         "你是歌词对齐与格式化助手。"
         "请严格输出 JSON 数组，不要输出任何解释、不要输出 markdown 代码块。"
         "JSON 每一项必须包含字段: time(number), original_html(string), translation(string)。"
-        "其中 original_html 允许包含 <ruby><rt></rt></ruby> 与 <br>。"
+        "其中 original_html 必须使用 HTML，可包含 <ruby><rt></rt></ruby> 与 <br>。"
+        "如果输入1包含日语假名或粤语注音，必须转写为 ruby 格式。"
+        "禁止把注音保留成括号、空格后缀或纯文本标注，必须写进 <rt>。"
+        "例如：'你(nei5)' 必须输出为 '<ruby>你<rt>nei5</rt></ruby>'。"
         "translation 若未知可填空字符串。"
         "time 必须来自带时间轴文本，不要虚构时间。"
         "行数尽量与时间轴歌词逐行对应。"
@@ -102,9 +105,13 @@ def call_ark_model(lyrics_with_furigana_or_jyutping: str, lrc_or_timed_text: str
 输出要求：
 1) 仅输出 JSON 数组；
 2) 每项格式：{{"time": 12.345, "original_html": "...", "translation": "..."}}；
-3) original_html 使用输入1中的内容，保留/整理注音，必要换行用 <br>；
-4) translation 可空字符串；
-5) 不要漏字段。
+3) original_html 使用输入1中的内容，必要换行用 <br>；
+4) 日语假名注音与粤语注音都必须写入 ruby/rt：
+    - 例：君(きみ) -> <ruby>君<rt>きみ</rt></ruby>
+    - 例：你(nei5) -> <ruby>你<rt>nei5</rt></ruby>
+    - 不允许输出 "你(nei5)" 这种括号注音形式；
+5) translation 可空字符串；
+6) 不要漏字段。
 """
 
     completion = client.chat.completions.create(
@@ -180,6 +187,7 @@ if do_generate:
         st.error("请先提供输入1和输入2。")
     else:
         with st.spinner("AI 正在对齐歌词并生成 JSON..."):
+            model_output = ""
             try:
                 model_output = call_ark_model(input1.strip(), timed_text.strip())
                 raw_data = extract_json_from_text(model_output)
@@ -197,6 +205,15 @@ if do_generate:
                 st.success(f"生成完成，共 {len(parsed)} 行。请先检查预览后再保存。")
             except Exception as e:
                 st.error(f"生成失败：{e}")
+                if model_output:
+                    st.session_state["lrc2json_raw"] = model_output
+                    with st.expander("模型原始返回（调试）", expanded=True):
+                        st.text_area(
+                            "请把这段内容发给我排查",
+                            value=model_output,
+                            height=260,
+                            key="lrc2json_raw_error_view",
+                        )
 
 if "lrc2json_result" in st.session_state:
     result = st.session_state["lrc2json_result"]
@@ -267,3 +284,12 @@ ruby rt { font-size: 0.7em; color: #B0B0B0; }
                 with open(output_path, "w", encoding="utf-8") as f:
                     json.dump(result, f, ensure_ascii=False, indent=2)
                 st.success(f"已保存：{output_path}")
+
+if "lrc2json_raw" in st.session_state:
+    with st.expander("最近一次模型原始返回", expanded=False):
+        st.text_area(
+            "原始文本（用于排查 JSON 解析失败）",
+            value=st.session_state.get("lrc2json_raw", ""),
+            height=220,
+            key="lrc2json_raw_latest",
+        )

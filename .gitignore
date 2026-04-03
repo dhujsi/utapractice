@@ -11,3 +11,6 @@ static/
 
 # IDE config
 .vscode/
+
+# Environment variables
+.env

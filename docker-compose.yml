@@ -4,6 +4,8 @@ services:
   utapractice:
     build: .
     container_name: utapractice
+    environment:
+      - ARK_API_KEY=${ARK_API_KEY}
     ports:
       - "8502:8501"
     volumes:
