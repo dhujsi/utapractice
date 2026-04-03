@@ -5,7 +5,7 @@ services:
     build: .
     container_name: utapractice
     ports:
-      - "8501:8501"
+      - "8502:8501"
     volumes:
       - ./data/songs:/app/songs
       - ./data/songs_archived:/app/songs_archived
@@ -14,7 +14,7 @@ services:
     labels:
       watchcow.enable: "true"
       watchcow.display_name: "练歌" # 对应应用名
-      watchcow.service_port: "8501" # 对应端口号
+      watchcow.service_port: "8502" # 对应端口号
       watchcow.protocol: "http"
       watchcow.path: "/"
 
