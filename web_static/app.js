@@ -11,6 +11,11 @@ const state = {
 
 const els = {
   songSelect: document.getElementById("songSelect"),
+  librarySongSelect: document.getElementById("librarySongSelect"),
+  librarySongInfo: document.getElementById("librarySongInfo"),
+  libraryLoadSong: document.getElementById("libraryLoadSong"),
+  libraryEditLyrics: document.getElementById("libraryEditLyrics"),
+  libraryDeleteSong: document.getElementById("libraryDeleteSong"),
   songTitle: document.getElementById("songTitle"),
   songAvailability: document.getElementById("songAvailability"),
   songPanel: document.getElementById("songPanel"),
@@ -36,6 +41,7 @@ const els = {
   clearABButton: document.getElementById("clearABButton"),
   abStatus: document.getElementById("abStatus"),
   mobileABButton: document.getElementById("mobileABButton"),
+  abHint: document.getElementById("abHint"),
   sideNav: document.querySelector(".side-nav"),
   sidePages: document.querySelectorAll(".side-page"),
   filterGroup: document.getElementById("filterGroup"),
@@ -51,10 +57,14 @@ const els = {
   apiKeyInput: document.getElementById("apiKeyInput"),
   modelInput: document.getElementById("modelInput"),
   saveApiSettings: document.getElementById("saveApiSettings"),
+  testApiSettings: document.getElementById("testApiSettings"),
+  aiSettingsStatus: document.getElementById("aiSettingsStatus"),
   convertSongName: document.getElementById("convertSongName"),
+  convertMode: document.getElementById("convertMode"),
   convertLrc: document.getElementById("convertLrc"),
   convertAnnotated: document.getElementById("convertAnnotated"),
   convertLyrics: document.getElementById("convertLyrics"),
+  convertStatus: document.getElementById("convertStatus"),
   toast: document.getElementById("toast"),
   openSidebar: document.getElementById("openSidebar"),
   closeSidebar: document.getElementById("closeSidebar"),
@@ -140,11 +150,14 @@ function filteredSongs() {
 function renderSongSelect() {
   const songs = filteredSongs();
   els.songSelect.innerHTML = "";
+  els.librarySongSelect.innerHTML = "";
   if (!songs.length) {
     const option = document.createElement("option");
     option.textContent = "暂无歌曲";
     option.value = "";
     els.songSelect.append(option);
+    els.librarySongSelect.append(option.cloneNode(true));
+    renderLibraryInfo();
     return;
   }
   for (const song of songs) {
@@ -153,13 +166,35 @@ function renderSongSelect() {
     const flags = [song.has_audio ? "音频" : null, song.has_lyrics ? song.lyrics_type?.toUpperCase() : null].filter(Boolean).join(" + ");
     option.textContent = `${song.name} (${flags || "空条目"})`;
     els.songSelect.append(option);
+    els.librarySongSelect.append(option.cloneNode(true));
   }
 
   if (state.current && songs.some((song) => song.name === state.current.name)) {
     els.songSelect.value = state.current.name;
+    els.librarySongSelect.value = state.current.name;
   } else if (songs.length) {
     loadSong(songs[0].name);
   }
+  renderLibraryInfo();
+}
+
+function selectedLibrarySong() {
+  return state.songs.find((song) => song.name === els.librarySongSelect.value) || null;
+}
+
+function renderLibraryInfo() {
+  const song = selectedLibrarySong();
+  if (!song) {
+    els.librarySongInfo.textContent = "请选择歌曲";
+    els.libraryLoadSong.disabled = true;
+    els.libraryEditLyrics.disabled = true;
+    els.libraryDeleteSong.disabled = true;
+    return;
+  }
+  els.librarySongInfo.textContent = `${song.has_audio ? "有音频" : "无音频"} · ${song.has_lyrics ? `${song.lyrics_type?.toUpperCase()} 歌词` : "无歌词"} · ${song.learned ? "已学会" : "未学会"}`;
+  els.libraryLoadSong.disabled = false;
+  els.libraryEditLyrics.disabled = false;
+  els.libraryDeleteSong.disabled = false;
 }
 
 function lineText(line) {
@@ -167,7 +202,7 @@ function lineText(line) {
   const translation = line.translation || "";
   if (state.displayMode === "original") return original;
   if (state.displayMode === "translation") return translation;
-  return `${original}<br><small>${translation}</small>`;
+  return `${original}<br><span class="translation-text">${translation}</span>`;
 }
 
 function renderLyrics() {
@@ -228,6 +263,9 @@ async function loadSettings() {
   els.baseUrlInput.value = settings.base_url || "";
   els.modelInput.value = settings.model || "";
   els.apiKeyInput.placeholder = settings.has_api_key ? "已保存，留空则不修改" : "尚未保存 API Key";
+  els.aiSettingsStatus.textContent = settings.has_api_key
+    ? `当前状态：已保存 API Key，模型 ${settings.model || "未设置"}`
+    : "当前状态：尚未保存 API Key";
 }
 
 async function loadSong(name) {
@@ -256,6 +294,9 @@ async function loadSong(name) {
 
   if (song.has_audio) syncAudioSource();
   renderLyrics();
+  els.songSelect.value = song.name;
+  els.librarySongSelect.value = song.name;
+  renderLibraryInfo();
 }
 
 function highlightCurrentLyric() {
@@ -313,6 +354,8 @@ els.filterGroup.addEventListener("click", (event) => {
   renderSongSelect();
 });
 els.songSelect.addEventListener("change", () => loadSong(els.songSelect.value));
+els.librarySongSelect.addEventListener("change", renderLibraryInfo);
+els.libraryLoadSong.addEventListener("click", () => loadSong(els.librarySongSelect.value));
 els.keySlider.addEventListener("input", () => {
   els.keyOutput.value = els.keySlider.value;
 });
@@ -357,6 +400,14 @@ els.setAButton.addEventListener("click", () => setABPoint("a"));
 els.setBButton.addEventListener("click", () => setABPoint("b"));
 els.clearABButton.addEventListener("click", resetAB);
 els.mobileABButton.addEventListener("click", cycleMobileAB);
+els.mobileABButton.addEventListener("pointerdown", () => {
+  els.abHint.classList.add("visible");
+});
+["pointerup", "pointercancel", "pointerleave"].forEach((eventName) => {
+  els.mobileABButton.addEventListener(eventName, () => {
+    els.abHint.classList.remove("visible");
+  });
+});
 els.sideNav.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-page]");
   if (!button) return;
@@ -372,9 +423,18 @@ document.addEventListener("keydown", (event) => {
   }
 });
 els.editLyrics.addEventListener("click", () => {
+  if (!state.current) return;
   els.editorError.textContent = "";
   els.lyricsEditor.value = JSON.stringify(state.lyrics, null, 2);
   els.lyricsDialog.showModal();
+});
+els.libraryEditLyrics.addEventListener("click", async () => {
+  const song = selectedLibrarySong();
+  if (!song) return;
+  if (!state.current || state.current.name !== song.name) {
+    await loadSong(song.name);
+  }
+  els.editLyrics.click();
 });
 els.saveLyrics.addEventListener("click", async () => {
   try {
@@ -393,10 +453,11 @@ els.saveLyrics.addEventListener("click", async () => {
     els.editorError.textContent = error.message;
   }
 });
-els.deleteSong.addEventListener("click", async () => {
-  if (!state.current) return;
-  if (!confirm(`确定删除「${state.current.name}」吗？文件会移动到归档目录。`)) return;
-  await requestJson(`/api/songs/${encodeURIComponent(state.current.name)}/delete`, { method: "POST" });
+els.libraryDeleteSong.addEventListener("click", async () => {
+  const song = selectedLibrarySong();
+  if (!song) return;
+  if (!confirm(`确定删除「${song.name}」吗？文件会移动到归档目录。`)) return;
+  await requestJson(`/api/songs/${encodeURIComponent(song.name)}/delete`, { method: "POST" });
   state.current = null;
   await loadSongs();
   showToast("歌曲已归档");
@@ -404,34 +465,69 @@ els.deleteSong.addEventListener("click", async () => {
 els.audioUploadInput.addEventListener("change", () => uploadFiles(els.audioUploadInput, "audio", "/api/upload/audio"));
 els.lyricsUploadInput.addEventListener("change", () => uploadFiles(els.lyricsUploadInput, "lyrics", "/api/upload/lyrics"));
 els.saveApiSettings.addEventListener("click", async () => {
-  await requestJson("/api/settings", {
-    method: "POST",
-    body: JSON.stringify({
-      base_url: els.baseUrlInput.value,
-      api_key: els.apiKeyInput.value,
-      model: els.modelInput.value,
-    }),
-  });
-  els.apiKeyInput.value = "";
-  await loadSettings();
-  showToast("接口设置已保存");
+  els.saveApiSettings.disabled = true;
+  els.aiSettingsStatus.textContent = "当前状态：正在保存接口设置...";
+  try {
+    await requestJson("/api/settings", {
+      method: "POST",
+      body: JSON.stringify({
+        base_url: els.baseUrlInput.value,
+        api_key: els.apiKeyInput.value,
+        model: els.modelInput.value,
+      }),
+    });
+    els.apiKeyInput.value = "";
+    await loadSettings();
+    els.aiSettingsStatus.textContent = "当前状态：接口设置已保存";
+    showToast("接口设置已保存");
+  } catch (error) {
+    els.aiSettingsStatus.textContent = `当前状态：保存失败 - ${error.message}`;
+    showToast("接口设置保存失败");
+  } finally {
+    els.saveApiSettings.disabled = false;
+  }
+});
+els.testApiSettings.addEventListener("click", async () => {
+  els.testApiSettings.disabled = true;
+  els.aiSettingsStatus.textContent = "当前状态：正在测试连接...";
+  try {
+    const result = await requestJson("/api/settings/test", { method: "POST", body: JSON.stringify({}) });
+    els.aiSettingsStatus.textContent = `当前状态：连接可用（${result.message || "OK"}）`;
+    showToast("AI 连接测试成功");
+  } catch (error) {
+    els.aiSettingsStatus.textContent = `当前状态：连接失败 - ${error.message}`;
+    showToast("AI 连接测试失败");
+  } finally {
+    els.testApiSettings.disabled = false;
+  }
 });
 els.convertLyrics.addEventListener("click", async () => {
   els.convertLyrics.disabled = true;
+  const oldText = els.convertLyrics.textContent;
+  els.convertLyrics.textContent = "生成中...";
+  const modeLabel = els.convertMode.value === "chunked" ? "实验性分段" : "稳定整首";
+  els.convertStatus.textContent = `当前状态：正在使用${modeLabel}模式生成 JSON...`;
   try {
     const result = await requestJson("/api/convert-lyrics", {
       method: "POST",
       body: JSON.stringify({
         song_name: els.convertSongName.value,
+        conversion_mode: els.convertMode.value,
         lrc_text: els.convertLrc.value,
         annotated_text: els.convertAnnotated.value,
       }),
     });
     await loadSongs();
     await loadSong(result.song_name);
+    const details = Array.isArray(result.steps) ? `：${result.steps.join("；")}` : "";
+    els.convertStatus.textContent = `当前状态：完成，已加入歌库「${result.song_name}」${details}`;
     showToast("JSON 已生成并加入歌库");
+  } catch (error) {
+    els.convertStatus.textContent = `当前状态：生成失败 - ${error.message}`;
+    showToast("生成失败");
   } finally {
     els.convertLyrics.disabled = false;
+    els.convertLyrics.textContent = oldText;
   }
 });
 els.openSidebar.addEventListener("click", () => els.sidebar.classList.add("open"));

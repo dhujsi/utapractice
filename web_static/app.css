@@ -191,6 +191,11 @@ output {
   justify-content: flex-end;
 }
 
+.wide-button {
+  width: 100%;
+  margin-top: 10px;
+}
+
 .danger {
   color: #b42318;
 }
@@ -206,6 +211,14 @@ output {
   margin: 8px 0 0;
   color: #667085;
   font-size: 13px;
+}
+
+.status-line {
+  min-height: 1.4em;
+  margin: 12px 0 0;
+  color: #475467;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .player {
@@ -262,8 +275,11 @@ output {
   color: #000;
 }
 
-.lyric-line small {
+.lyric-line .translation-text {
   color: #9aa3b2;
+  display: inline-block;
+  font-size: 0.86em;
+  line-height: 1.55;
 }
 
 ruby rt {
@@ -415,6 +431,28 @@ dialog {
     display: flex;
     align-items: flex-end;
     gap: 10px;
+  }
+
+  .ab-hint {
+    position: absolute;
+    right: 0;
+    bottom: 66px;
+    width: 210px;
+    border-radius: 8px;
+    background: rgba(24, 32, 51, 0.92);
+    color: #fff;
+    font-size: 12px;
+    line-height: 1.45;
+    padding: 8px 10px;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(4px);
+    transition: opacity 0.12s ease, transform 0.12s ease;
+  }
+
+  .ab-hint.visible {
+    opacity: 1;
+    transform: translateY(0);
   }
 
   .floating-controls button {

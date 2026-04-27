@@ -18,7 +18,7 @@
 
       <nav class="side-nav" aria-label="页面">
         <button type="button" class="active" data-page="practice">练习</button>
-        <button type="button" data-page="library">入库</button>
+        <button type="button" data-page="library">歌库</button>
         <button type="button" data-page="generator">生成歌词</button>
       </nav>
 
@@ -39,6 +39,7 @@
         <section class="panel song-panel" id="songPanel" hidden>
           <h2 id="songTitle"></h2>
           <p class="meta-line" id="songAvailability"></p>
+          <button type="button" id="editLyrics">编辑歌词</button>
           <label class="field" id="keyField">
             <span>实时升降调 (Key)</span>
             <input id="keySlider" type="range" min="-12" max="12" value="0">
@@ -76,14 +77,24 @@
             <input id="learnedInput" type="checkbox">
             <span>已学会</span>
           </label>
-          <div class="button-row">
-            <button type="button" id="editLyrics">编辑歌词</button>
-            <button type="button" id="deleteSong" class="danger">删除这首歌</button>
-          </div>
         </section>
       </div>
 
       <div class="side-page" data-page-panel="library">
+        <section class="panel">
+          <h2>歌库管理</h2>
+          <label class="field">
+            <span>选择条目</span>
+            <select id="librarySongSelect"></select>
+          </label>
+          <p class="meta-line" id="librarySongInfo">请选择歌曲</p>
+          <div class="button-row">
+            <button type="button" id="libraryLoadSong">载入练习</button>
+            <button type="button" id="libraryEditLyrics">编辑歌词</button>
+          </div>
+          <button type="button" id="libraryDeleteSong" class="danger wide-button">删除这首歌</button>
+        </section>
+
         <section class="panel">
           <h2>添加音频</h2>
           <label class="field">
@@ -116,7 +127,11 @@
             <span>模型</span>
             <input id="modelInput" type="text" placeholder="gpt-4.1-mini">
           </label>
-          <button type="button" id="saveApiSettings">保存接口设置</button>
+          <p class="status-line" id="aiSettingsStatus">正在读取接口状态...</p>
+          <div class="button-row">
+            <button type="button" id="saveApiSettings">保存接口设置</button>
+            <button type="button" id="testApiSettings">测试连接</button>
+          </div>
         </section>
 
         <section class="panel">
@@ -126,6 +141,13 @@
             <input id="convertSongName" type="text" placeholder="应与音频文件名一致，或作为纯歌词条目">
           </label>
           <label class="field">
+            <span>生成模式</span>
+            <select id="convertMode">
+              <option value="stable">稳定：清洗后整首生成</option>
+              <option value="chunked">实验性：清洗后分段匹配</option>
+            </select>
+          </label>
+          <label class="field">
             <span>LRC 内容</span>
             <textarea id="convertLrc" class="small-textarea" spellcheck="false"></textarea>
           </label>
@@ -133,6 +155,7 @@
             <span>带假名/粤拼注音的文本</span>
             <textarea id="convertAnnotated" class="small-textarea" spellcheck="false"></textarea>
           </label>
+          <p class="status-line" id="convertStatus">等待输入</p>
           <button type="button" id="convertLyrics">生成 JSON 并加入歌库</button>
         </section>
       </div>
@@ -152,7 +175,8 @@
         <audio id="audio" controls preload="metadata"></audio>
       </div>
       <div class="floating-controls" id="floatingControls" hidden>
-        <button type="button" id="mobileABButton">A-B</button>
+        <div class="ab-hint" id="abHint">点一次设 A，再点设 B；已循环时再点会重新设 A。</div>
+        <button type="button" id="mobileABButton" aria-describedby="abHint">A-B</button>
         <button type="button" id="speedButton">1.0x</button>
         <button type="button" id="playButton">▶</button>
       </div>
