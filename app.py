@@ -79,6 +79,63 @@ def process_pitch(_audio_path, n_steps):
 # --- 主应用 ---
 st.set_page_config(layout="wide", initial_sidebar_state="expanded")
 
+st.markdown("""
+<style>
+    *,
+    *::before,
+    *::after {
+        box-sizing: border-box;
+    }
+
+    html,
+    body,
+    #root,
+    .stApp {
+        width: 100vw !important;
+        height: 100dvh !important;
+        max-height: 100dvh !important;
+        overflow: hidden !important;
+    }
+
+    .stApp {
+        position: fixed !important;
+        inset: 0 !important;
+    }
+
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"],
+    [data-testid="stMainBlockContainer"],
+    section.main,
+    .main {
+        height: 100dvh !important;
+        max-height: 100dvh !important;
+        overflow: hidden !important;
+    }
+
+    [data-testid="stMain"] .block-container,
+    [data-testid="stMainBlockContainer"],
+    section.main .block-container {
+        height: 100dvh !important;
+        max-height: 100dvh !important;
+        padding-top: 1rem !important;
+        padding-bottom: 1rem !important;
+        margin-top: 0 !important;
+        margin-bottom: 0 !important;
+        overflow: hidden !important;
+    }
+
+    [data-testid="stSidebar"],
+    [data-testid="stSidebarContent"],
+    [data-testid="stSidebarUserContent"] {
+        height: 100dvh !important;
+        max-height: 100dvh !important;
+        min-height: 0 !important;
+        overflow-y: auto !important;
+        overscroll-behavior: contain !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 if 'selected_song' not in st.session_state:
     st.session_state.selected_song = None
 
@@ -283,15 +340,17 @@ if st.session_state.selected_song and st.session_state.get('audio_b64_data'):
         # 把整个 html_content 变量的内容替换成下面的
         align_class_map = {"居左": "align-left", "居中": "align-center", "居右": "align-right"}
         css_align_class = align_class_map.get(lyric_align, "align-center")
+        component_height = 640
+        component_viewport_height = "calc(100dvh - 4.5rem)"
         html_content = f"""
     <style>
         html, body {{
-            height: 100%; margin: 0; padding: 0;
-            overflow: hidden; display: flex;
+            height: 100%; min-height: 0; margin: 0; padding: 0;
+            overflow: hidden; display: flex; position: relative;
             flex-direction: column; font-family: sans-serif;
         }}
         .lyric-container {{
-            flex-grow: 1; overflow-y: auto; padding: 10px;
+            flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px;
         }}
         /* --- 核心修改在这里 --- */
         /* 我们不再直接给 .lyric-line 设置 text-align */
@@ -309,14 +368,14 @@ if st.session_state.selected_song and st.session_state.get('audio_b64_data'):
         ruby rt {{ font-size: 0.7em; color: #B0B0B0; }}
         .active-lyric {{ background-color: #e0e0e0; color: #000; }}
         .audio-player-desktop {{
-            flex-shrink: 0; padding: 10px;
+            flex: 0 0 auto; padding: 10px;
             background-color: rgba(255, 255, 255, 0.8);
             backdrop-filter: blur(10px);
             border-top: 1px solid #eee;
         }}
         .audio-player-desktop audio {{ width: 100%; }}
         .mobile-player-container {{
-            display: none; position: fixed; bottom: 30px; right: 20px;
+            display: none; position: fixed; right: 20px; bottom: 30px;
             z-index: 101; align-items: flex-end; gap: 10px;
         }}
         .audio-player-mobile {{
@@ -333,7 +392,7 @@ if st.session_state.selected_song and st.session_state.get('audio_b64_data'):
         @media (max-width: 600px) {{
             .audio-player-desktop {{ display: none; }}
             .mobile-player-container {{ display: flex; }}
-            .lyric-container {{ padding-bottom: 80px; }}
+            .lyric-container {{ padding-bottom: 90px; }}
         }}
     </style>
 
@@ -410,15 +469,25 @@ if st.session_state.selected_song and st.session_state.get('audio_b64_data'):
     </script>
     """
 
-        st.markdown("""
+        st.markdown(f"""
         <style>
-            iframe[title="streamlit.components.v1.html"] {
-                height: 85vh !important;
-            }
+            .block-container {{
+                padding-top: 1rem !important;
+                padding-bottom: 1rem !important;
+            }}
+            div[data-testid="stIFrame"] {{
+                height: {component_viewport_height} !important;
+                max-height: {component_viewport_height} !important;
+            }}
+            iframe[title="streamlit.components.v1.html"] {{
+                height: {component_viewport_height} !important;
+                max-height: {component_viewport_height} !important;
+                display: block;
+            }}
         </style>
         """, unsafe_allow_html=True)
        
-        components.html(html_content, height=740, scrolling=True) # height 和 scrolling 在这里影响不大，但留着也行
+        components.html(html_content, height=component_height, scrolling=False)
 
 elif st.session_state.selected_song:
     st.info("音频正在加载中，请稍候...")

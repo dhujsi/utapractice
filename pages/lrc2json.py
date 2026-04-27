@@ -115,7 +115,7 @@ def call_ark_model(lyrics_with_furigana_or_jyutping: str, lrc_or_timed_text: str
 """
 
     completion = client.chat.completions.create(
-        model="deepseek-v3-2-251201",
+        model="ep-20260208224806-h8zp7",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},

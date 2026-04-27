@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f8fb">
+  <title>练歌房</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/web_static/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>练歌房</h1>
+        <button class="plain-icon mobile-only" id="closeSidebar" type="button" aria-label="返回">←</button>
+      </div>
+
+      <nav class="side-nav" aria-label="页面">
+        <button type="button" class="active" data-page="practice">练习</button>
+        <button type="button" data-page="library">入库</button>
+        <button type="button" data-page="generator">生成歌词</button>
+      </nav>
+
+      <div class="side-page active" data-page-panel="practice">
+        <section class="panel">
+          <h2>曲库</h2>
+          <div class="segmented" id="filterGroup" role="radiogroup" aria-label="筛选">
+            <button type="button" class="active" data-filter="all">全部</button>
+            <button type="button" data-filter="learned">已学会</button>
+            <button type="button" data-filter="unlearned">未学会</button>
+          </div>
+          <label class="field">
+            <span>选择歌曲</span>
+            <select id="songSelect"></select>
+          </label>
+        </section>
+
+        <section class="panel song-panel" id="songPanel" hidden>
+          <h2 id="songTitle"></h2>
+          <p class="meta-line" id="songAvailability"></p>
+          <label class="field" id="keyField">
+            <span>实时升降调 (Key)</span>
+            <input id="keySlider" type="range" min="-12" max="12" value="0">
+            <output id="keyOutput">0</output>
+          </label>
+          <div class="button-row">
+            <button type="button" id="saveKey">设为默认 Key</button>
+            <button type="button" id="resetKey">还原原 Key</button>
+          </div>
+        </section>
+
+        <section class="panel song-panel" id="settingsPanel" hidden>
+          <h2>显示 & 备注</h2>
+          <label class="field">
+            <span>歌词显示模式</span>
+            <select id="displayMode">
+              <option value="both">原文 + 译文</option>
+              <option value="original">仅原文</option>
+              <option value="translation">仅译文</option>
+            </select>
+          </label>
+          <div class="field">
+            <span>歌词对齐</span>
+            <div class="segmented" id="alignGroup">
+              <button type="button" data-align="left">居左</button>
+              <button type="button" class="active" data-align="center">居中</button>
+              <button type="button" data-align="right">居右</button>
+            </div>
+          </div>
+          <label class="field">
+            <span>音域备注</span>
+            <input id="rangeInput" type="text" autocomplete="off">
+          </label>
+          <label class="check-row">
+            <input id="learnedInput" type="checkbox">
+            <span>已学会</span>
+          </label>
+          <div class="button-row">
+            <button type="button" id="editLyrics">编辑歌词</button>
+            <button type="button" id="deleteSong" class="danger">删除这首歌</button>
+          </div>
+        </section>
+      </div>
+
+      <div class="side-page" data-page-panel="library">
+        <section class="panel">
+          <h2>添加音频</h2>
+          <label class="field">
+            <span>MP3 / WAV / FLAC / M4A，可单独上传</span>
+            <input id="audioUploadInput" type="file" multiple accept=".mp3,.wav,.flac,.m4a,audio/*">
+          </label>
+        </section>
+
+        <section class="panel">
+          <h2>添加歌词</h2>
+          <label class="field">
+            <span>LRC / JSON，可单独上传。与音频同名会自动合并。</span>
+            <input id="lyricsUploadInput" type="file" multiple accept=".lrc,.json,application/json">
+          </label>
+        </section>
+      </div>
+
+      <div class="side-page" data-page-panel="generator">
+        <section class="panel">
+          <h2>接口设置</h2>
+          <label class="field">
+            <span>OpenAI 兼容 Base URL</span>
+            <input id="baseUrlInput" type="url" placeholder="https://api.openai.com/v1">
+          </label>
+          <label class="field">
+            <span>API Key</span>
+            <input id="apiKeyInput" type="password" placeholder="留空则不修改已保存 Key">
+          </label>
+          <label class="field">
+            <span>模型</span>
+            <input id="modelInput" type="text" placeholder="gpt-4.1-mini">
+          </label>
+          <button type="button" id="saveApiSettings">保存接口设置</button>
+        </section>
+
+        <section class="panel">
+          <h2>生成 Ruby JSON</h2>
+          <label class="field">
+            <span>生成后的歌曲名</span>
+            <input id="convertSongName" type="text" placeholder="应与音频文件名一致，或作为纯歌词条目">
+          </label>
+          <label class="field">
+            <span>LRC 内容</span>
+            <textarea id="convertLrc" class="small-textarea" spellcheck="false"></textarea>
+          </label>
+          <label class="field">
+            <span>带假名/粤拼注音的文本</span>
+            <textarea id="convertAnnotated" class="small-textarea" spellcheck="false"></textarea>
+          </label>
+          <button type="button" id="convertLyrics">生成 JSON 并加入歌库</button>
+        </section>
+      </div>
+    </aside>
+
+    <main class="player">
+      <button class="sidebar-toggle mobile-only" id="openSidebar" type="button">☰</button>
+      <div class="empty-state" id="emptyState">请选择一首歌曲开始练习</div>
+      <div class="lyrics align-center" id="lyrics"></div>
+      <div class="controls" id="controls" hidden>
+        <div class="ab-controls">
+          <button type="button" id="setAButton">设 A</button>
+          <button type="button" id="setBButton">设 B</button>
+          <button type="button" id="clearABButton">清除 A-B</button>
+          <span id="abStatus">A-B 未设置</span>
+        </div>
+        <audio id="audio" controls preload="metadata"></audio>
+      </div>
+      <div class="floating-controls" id="floatingControls" hidden>
+        <button type="button" id="mobileABButton">A-B</button>
+        <button type="button" id="speedButton">1.0x</button>
+        <button type="button" id="playButton">▶</button>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="lyricsDialog">
+    <form method="dialog" class="dialog-card">
+      <h2>编辑歌词 JSON</h2>
+      <textarea id="lyricsEditor" spellcheck="false"></textarea>
+      <p id="editorError" class="error-text"></p>
+      <div class="button-row end">
+        <button value="cancel" type="submit">取消</button>
+        <button value="save" id="saveLyrics" type="button">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="/web_static/app.js"></script>
+</body>
+</html>
