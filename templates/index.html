@@ -156,7 +156,15 @@
             <textarea id="convertAnnotated" class="small-textarea" spellcheck="false"></textarea>
           </label>
           <p class="status-line" id="convertStatus">等待输入</p>
-          <button type="button" id="convertLyrics">生成 JSON 并加入歌库</button>
+          <button type="button" id="convertLyrics">提交后台生成任务</button>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <h2>任务列表</h2>
+            <button type="button" id="refreshJobs" class="plain-button">刷新</button>
+          </div>
+          <div class="job-list" id="jobList"></div>
         </section>
       </div>
     </aside>

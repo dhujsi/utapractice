@@ -65,11 +65,15 @@ const els = {
   convertAnnotated: document.getElementById("convertAnnotated"),
   convertLyrics: document.getElementById("convertLyrics"),
   convertStatus: document.getElementById("convertStatus"),
+  refreshJobs: document.getElementById("refreshJobs"),
+  jobList: document.getElementById("jobList"),
   toast: document.getElementById("toast"),
   openSidebar: document.getElementById("openSidebar"),
   closeSidebar: document.getElementById("closeSidebar"),
   sidebar: document.querySelector(".sidebar"),
 };
+
+let jobPollTimer = null;
 
 function formatTime(seconds) {
   if (seconds == null || Number.isNaN(seconds)) return "--:--";
@@ -266,6 +270,116 @@ async function loadSettings() {
   els.aiSettingsStatus.textContent = settings.has_api_key
     ? `当前状态：已保存 API Key，模型 ${settings.model || "未设置"}`
     : "当前状态：尚未保存 API Key";
+}
+
+function jobStatusLabel(status) {
+  const labels = { queued: "排队中", running: "生成中", done: "已完成", failed: "失败", stopped: "已停止" };
+  return labels[status] || status || "未知";
+}
+
+function formatDuration(seconds) {
+  if (seconds == null) return "";
+  const total = Math.max(0, Math.round(Number(seconds)));
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return minutes ? `${minutes}分${rest}秒` : `${rest}秒`;
+}
+
+function renderJobs(jobs) {
+  els.jobList.innerHTML = "";
+  if (!jobs.length) {
+    const empty = document.createElement("p");
+    empty.className = "meta-line";
+    empty.textContent = "暂无任务";
+    els.jobList.append(empty);
+    return;
+  }
+
+  for (const job of jobs.slice(0, 8)) {
+    const item = document.createElement("article");
+    item.className = `job-item ${job.status || ""}`;
+
+    const title = document.createElement("div");
+    title.className = "job-title";
+    title.innerHTML = `<strong>${job.song_name || "未命名"}</strong><span>${jobStatusLabel(job.status)}</span>`;
+    item.append(title);
+
+    const meta = document.createElement("p");
+    meta.className = "meta-line";
+    const runningSeconds =
+      job.duration_seconds == null && job.started_at && job.status === "running"
+        ? (Date.now() - new Date(job.started_at).getTime()) / 1000
+        : job.duration_seconds;
+    const duration = runningSeconds == null ? "" : ` · AI 用时 ${formatDuration(runningSeconds)}`;
+    meta.textContent = `${job.mode === "chunked" ? "实验性分段" : "稳定整首"}${duration} · ${job.updated_at || job.created_at || ""}`;
+    item.append(meta);
+
+    const steps = document.createElement("ol");
+    steps.className = "job-steps";
+    for (const step of (job.steps || []).slice(-6)) {
+      const line = document.createElement("li");
+      line.textContent = step.message || step;
+      steps.append(line);
+    }
+    item.append(steps);
+
+    if (job.status === "done" && job.result?.song_name) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "载入";
+      button.addEventListener("click", async () => {
+        await loadSongs();
+        await loadSong(job.result.song_name);
+      });
+      item.append(button);
+    }
+    if (job.status === "queued" || job.status === "running") {
+      const stopButton = document.createElement("button");
+      stopButton.type = "button";
+      stopButton.textContent = job.stop_requested ? "停止中..." : "停止";
+      stopButton.disabled = Boolean(job.stop_requested);
+      stopButton.addEventListener("click", async () => {
+        await requestJson(`/api/convert-jobs/${encodeURIComponent(job.id)}/stop`, { method: "POST", body: JSON.stringify({}) });
+        await loadJobs();
+        scheduleJobPolling();
+      });
+      item.append(stopButton);
+    }
+    if (["done", "failed", "stopped"].includes(job.status)) {
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "danger";
+      deleteButton.textContent = "删除任务";
+      deleteButton.addEventListener("click", async () => {
+        await requestJson(`/api/convert-jobs/${encodeURIComponent(job.id)}`, { method: "DELETE" });
+        await loadJobs();
+      });
+      item.append(deleteButton);
+    }
+    els.jobList.append(item);
+  }
+}
+
+async function loadJobs() {
+  const jobs = await requestJson("/api/convert-jobs");
+  renderJobs(jobs);
+  return jobs;
+}
+
+function scheduleJobPolling() {
+  if (jobPollTimer) clearInterval(jobPollTimer);
+  jobPollTimer = setInterval(async () => {
+    try {
+      const jobs = await loadJobs();
+      if (!jobs.some((job) => job.status === "queued" || job.status === "running")) {
+        clearInterval(jobPollTimer);
+        jobPollTimer = null;
+      }
+    } catch {
+      clearInterval(jobPollTimer);
+      jobPollTimer = null;
+    }
+  }, 2500);
 }
 
 async function loadSong(name) {
@@ -504,11 +618,11 @@ els.testApiSettings.addEventListener("click", async () => {
 els.convertLyrics.addEventListener("click", async () => {
   els.convertLyrics.disabled = true;
   const oldText = els.convertLyrics.textContent;
-  els.convertLyrics.textContent = "生成中...";
+  els.convertLyrics.textContent = "提交中...";
   const modeLabel = els.convertMode.value === "chunked" ? "实验性分段" : "稳定整首";
-  els.convertStatus.textContent = `当前状态：正在使用${modeLabel}模式生成 JSON...`;
+  els.convertStatus.textContent = `当前状态：正在提交${modeLabel}后台任务...`;
   try {
-    const result = await requestJson("/api/convert-lyrics", {
+    const job = await requestJson("/api/convert-jobs", {
       method: "POST",
       body: JSON.stringify({
         song_name: els.convertSongName.value,
@@ -517,20 +631,24 @@ els.convertLyrics.addEventListener("click", async () => {
         annotated_text: els.convertAnnotated.value,
       }),
     });
-    await loadSongs();
-    await loadSong(result.song_name);
-    const details = Array.isArray(result.steps) ? `：${result.steps.join("；")}` : "";
-    els.convertStatus.textContent = `当前状态：完成，已加入歌库「${result.song_name}」${details}`;
-    showToast("JSON 已生成并加入歌库");
+    els.convertStatus.textContent = `当前状态：任务已提交「${job.song_name}」，可关闭页面后回来查看`;
+    await loadJobs();
+    scheduleJobPolling();
+    showToast("后台任务已提交");
   } catch (error) {
-    els.convertStatus.textContent = `当前状态：生成失败 - ${error.message}`;
-    showToast("生成失败");
+    els.convertStatus.textContent = `当前状态：提交失败 - ${error.message}`;
+    showToast("提交失败");
   } finally {
     els.convertLyrics.disabled = false;
     els.convertLyrics.textContent = oldText;
   }
 });
+els.refreshJobs.addEventListener("click", () => loadJobs().catch((error) => showToast(error.message)));
 els.openSidebar.addEventListener("click", () => els.sidebar.classList.add("open"));
 els.closeSidebar.addEventListener("click", () => els.sidebar.classList.remove("open"));
 
-Promise.all([loadSettings(), loadSongs()]).catch((error) => showToast(error.message));
+Promise.all([loadSettings(), loadSongs(), loadJobs()])
+  .then(([, , jobs]) => {
+    if (jobs.some((job) => job.status === "queued" || job.status === "running")) scheduleJobPolling();
+  })
+  .catch((error) => showToast(error.message));

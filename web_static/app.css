@@ -221,6 +221,73 @@ output {
   line-height: 1.4;
 }
 
+.section-heading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.section-heading h2 {
+  margin: 0;
+}
+
+.plain-button {
+  background: transparent;
+  border: 0;
+  color: #344054;
+  padding: 4px 0;
+}
+
+.job-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.job-item {
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.job-title {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.job-title span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.job-item.done .job-title span {
+  color: #067647;
+}
+
+.job-item.failed .job-title span {
+  color: #b42318;
+}
+
+.job-item.stopped .job-title span {
+  color: #b54708;
+}
+
+.job-steps {
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.job-item button {
+  margin-top: 8px;
+  width: 100%;
+}
+
 .player {
   position: relative;
   min-width: 0;
