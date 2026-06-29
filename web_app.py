@@ -63,7 +63,7 @@ def save_settings(settings):
 
 
 def now_iso():
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def load_jobs():
@@ -466,7 +466,9 @@ def perform_lyrics_conversion(payload, report=lambda _message: None, job_id=None
                     "Keep lrc_rows order and use each lrc_rows time value exactly.",
                     "The cleaned source line count may not match the LRC row count.",
                     "Use the cleaned source as reference for ruby/furigana/jyutping, not as a row-by-row contract.",
-                    "original_html must contain only the sung lyric in the original language, with ruby markup if useful.",
+                    "original_html MUST use <ruby>字<rt>reading</rt></ruby> for EVERY character whose pronunciation appears in the cleaned source. Ruby annotations are MANDATORY — never skip or omit them.",
+                        "If the cleaned source contains furigana, jyutping, or any reading for a character, that reading MUST appear in the output using ruby tags. Do not discard readings.",
+                        "original_html is only the sung lyric in the original language — no translations, no explanations.",
                     "Never put Chinese translation, explanation, or meaning text in original_html.",
                     "Do not use <br> to append translation inside original_html.",
                     "Do not output song title, artist, lyricist, composer, arranger, or credit lines.",
@@ -512,7 +514,9 @@ def perform_lyrics_conversion(payload, report=lambda _message: None, job_id=None
                         "Use context_rows only for continuity; do not output context-only rows.",
                         "Prefer candidate_annotated_lines, using their indexes only as source references.",
                         "The source line count may not match the LRC row count because it may include translations or removed romaji.",
-                        "original_html must contain only the sung lyric in the original language, with ruby/furigana/jyutping markup if useful.",
+                        "original_html MUST use <ruby>字<rt>reading</rt></ruby> for EVERY character whose pronunciation appears in the cleaned source. Ruby annotations are MANDATORY — never skip or omit them.",
+                        "If the cleaned source contains furigana, jyutping, or any reading for a character, that reading MUST appear in the output using ruby tags. Do not discard readings.",
+                        "original_html is only the sung lyric in the original language — no translations, no explanations.",
                         "Never put Chinese translation, explanation, or meaning text in original_html.",
                         "Do not use <br> to append translation inside original_html.",
                         "Do not output song title, artist, lyricist, composer, arranger, or credit lines.",
@@ -750,7 +754,7 @@ def api_test_settings():
 
 
 def run_convert_job(job_id):
-    started_at = datetime.now()
+    started_at = datetime.now().astimezone()
     update_job(job_id, status="running", message="任务已开始", started_at=started_at.isoformat(timespec="seconds"))
     try:
         with jobs_lock:
@@ -758,7 +762,7 @@ def run_convert_job(job_id):
             payload = job.get("payload", {})
 
         result = perform_lyrics_conversion(payload, report=lambda message: append_job_step(job_id, message), job_id=job_id)
-        duration_seconds = round((datetime.now() - started_at).total_seconds(), 1)
+        duration_seconds = round((datetime.now().astimezone() - started_at).total_seconds(), 1)
         update_job(
             job_id,
             status="done",
@@ -769,7 +773,7 @@ def run_convert_job(job_id):
             finished_at=now_iso(),
         )
     except RuntimeError as exc:
-        duration_seconds = round((datetime.now() - started_at).total_seconds(), 1)
+        duration_seconds = round((datetime.now().astimezone() - started_at).total_seconds(), 1)
         if str(exc) != "TASK_STOPPED":
             append_job_step(job_id, f"任务停止：{exc}")
         update_job(
@@ -781,7 +785,7 @@ def run_convert_job(job_id):
             stop_requested=False,
         )
     except Exception as exc:
-        duration_seconds = round((datetime.now() - started_at).total_seconds(), 1)
+        duration_seconds = round((datetime.now().astimezone() - started_at).total_seconds(), 1)
         append_job_step(job_id, f"生成失败：{exc}")
         update_job(
             job_id,
@@ -1017,7 +1021,9 @@ def api_convert_lyrics_chunked():
                         "Keep lrc_rows order and use each lrc_rows time value exactly.",
                         "The cleaned source line count may not match the LRC row count.",
                         "Use the cleaned source as reference for ruby/furigana/jyutping, not as a row-by-row contract.",
-                        "original_html must contain only the sung lyric in the original language, with ruby markup if useful.",
+                        "original_html MUST use <ruby>字<rt>reading</rt></ruby> for EVERY character whose pronunciation appears in the cleaned source. Ruby annotations are MANDATORY — never skip or omit them.",
+                        "If the cleaned source contains furigana, jyutping, or any reading for a character, that reading MUST appear in the output using ruby tags. Do not discard readings.",
+                        "original_html is only the sung lyric in the original language — no translations, no explanations.",
                         "Never put Chinese translation, explanation, or meaning text in original_html.",
                         "Do not use <br> to append translation inside original_html.",
                         "Do not output song title, artist, lyricist, composer, arranger, or credit lines.",
@@ -1075,7 +1081,9 @@ def api_convert_lyrics_chunked():
                         "Use context_rows only for continuity; do not output context-only rows.",
                         "Prefer candidate_annotated_lines, using their indexes only as source references.",
                         "The source line count may not match the LRC row count because it may include translations or removed romaji.",
-                        "original_html must contain only the sung lyric in the original language, with ruby/furigana/jyutping markup if useful.",
+                        "original_html MUST use <ruby>字<rt>reading</rt></ruby> for EVERY character whose pronunciation appears in the cleaned source. Ruby annotations are MANDATORY — never skip or omit them.",
+                        "If the cleaned source contains furigana, jyutping, or any reading for a character, that reading MUST appear in the output using ruby tags. Do not discard readings.",
+                        "original_html is only the sung lyric in the original language — no translations, no explanations.",
                         "Never put Chinese translation, explanation, or meaning text in original_html.",
                         "Do not use <br> to append translation inside original_html.",
                         "Do not output song title, artist, lyricist, composer, arranger, or credit lines.",
