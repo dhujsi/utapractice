@@ -1,2 +1,7 @@
 .venv
 __pycache__
+data
+generated
+settings.local.json
+lyrics_jobs.json
+song_db.json
