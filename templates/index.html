@@ -125,38 +125,13 @@
           </label>
           <label class="field">
             <span>模型</span>
-            <input id="modelInput" type="text" placeholder="gpt-4.1-mini">
+            <input id="modelInput" type="text" placeholder="deepseek-v4-pro">
           </label>
           <p class="status-line" id="aiSettingsStatus">正在读取接口状态...</p>
           <div class="button-row">
             <button type="button" id="saveApiSettings">保存接口设置</button>
             <button type="button" id="testApiSettings">测试连接</button>
           </div>
-        </section>
-
-        <section class="panel">
-          <h2>生成 Ruby JSON</h2>
-          <label class="field">
-            <span>生成后的歌曲名</span>
-            <input id="convertSongName" type="text" placeholder="应与音频文件名一致，或作为纯歌词条目">
-          </label>
-          <label class="field">
-            <span>生成模式</span>
-            <select id="convertMode">
-              <option value="stable">稳定：清洗后整首生成</option>
-              <option value="chunked">实验性：清洗后分段匹配</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>LRC 内容</span>
-            <textarea id="convertLrc" class="small-textarea" spellcheck="false"></textarea>
-          </label>
-          <label class="field">
-            <span>带假名/粤拼注音的文本</span>
-            <textarea id="convertAnnotated" class="small-textarea" spellcheck="false"></textarea>
-          </label>
-          <p class="status-line" id="convertStatus">等待输入</p>
-          <button type="button" id="convertLyrics">提交后台生成任务</button>
         </section>
 
         <section class="panel">
@@ -170,24 +145,138 @@
     </aside>
 
     <main class="player">
-      <button class="sidebar-toggle mobile-only" id="openSidebar" type="button">☰</button>
-      <div class="empty-state" id="emptyState">请选择一首歌曲开始练习</div>
-      <div class="lyrics align-center" id="lyrics"></div>
-      <div class="controls" id="controls" hidden>
-        <div class="ab-controls">
-          <button type="button" id="setAButton">设 A</button>
-          <button type="button" id="setBButton">设 B</button>
-          <button type="button" id="clearABButton">清除 A-B</button>
-          <span id="abStatus">A-B 未设置</span>
+      <button class="sidebar-toggle mobile-only" id="openSidebar" type="button" aria-label="打开侧栏">☰</button>
+
+      <section class="player-view" id="playerView">
+        <div class="empty-state" id="emptyState">请选择一首歌曲开始练习</div>
+        <div class="lyrics align-center" id="lyrics"></div>
+        <div class="controls" id="controls" hidden>
+          <div class="ab-controls">
+            <button type="button" id="setAButton">设 A</button>
+            <button type="button" id="setBButton">设 B</button>
+            <button type="button" id="clearABButton">清除 A-B</button>
+            <span id="abStatus">A-B 未设置</span>
+          </div>
+          <audio id="audio" controls preload="metadata"></audio>
         </div>
-        <audio id="audio" controls preload="metadata"></audio>
-      </div>
-      <div class="floating-controls" id="floatingControls" hidden>
-        <div class="ab-hint" id="abHint">点一次设 A，再点设 B；已循环时再点会重新设 A。</div>
-        <button type="button" id="mobileABButton" aria-describedby="abHint">A-B</button>
-        <button type="button" id="speedButton">1.0x</button>
-        <button type="button" id="playButton">▶</button>
-      </div>
+        <div class="floating-controls" id="floatingControls" hidden>
+          <div class="ab-hint" id="abHint">点一次设 A，再点设 B；已循环时再点会重新设 A。</div>
+          <button type="button" id="mobileABButton" aria-describedby="abHint">A-B</button>
+          <button type="button" id="speedButton">1.0x</button>
+          <button type="button" id="playButton">▶</button>
+        </div>
+      </section>
+
+      <section class="workspace-view" id="workspaceView" hidden>
+        <div class="workspace-header">
+          <div>
+            <p class="meta-line">歌词工作页</p>
+            <h2>搜索、对齐、生成、发布</h2>
+          </div>
+          <p class="status-line" id="workspaceStatus">选择或输入歌曲后搜索歌词</p>
+        </div>
+
+        <section class="workspace-section workspace-step">
+          <div class="step-heading">
+            <span>1</span>
+            <div>
+              <h2>搜索并预览来源</h2>
+              <p class="meta-line">先找歌词版本，选中结果只预览，不写入歌库。</p>
+            </div>
+          </div>
+          <div class="workspace-grid compact">
+            <label class="field">
+              <span>歌曲名</span>
+              <input id="workspaceSongName" type="text" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>歌手</span>
+              <input id="workspaceArtist" type="text" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>专辑</span>
+              <input id="workspaceAlbum" type="text" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>来源</span>
+              <select id="workspaceProvider">
+                <option value="aggregate">聚合来源</option>
+                <option value="netease">网易云</option>
+                <option value="qq">QQ 音乐</option>
+                <option value="kugou">酷狗</option>
+                <option value="lrclib">LRCLIB</option>
+              </select>
+            </label>
+          </div>
+          <div class="step-actions search-actions">
+            <button type="button" id="searchLyrics">搜索歌词</button>
+          </div>
+          <div class="search-preview-layout">
+            <article class="results-pane">
+              <div class="section-heading">
+                <h3>搜索结果</h3>
+                <span class="meta-line" id="searchSummary">暂无结果</span>
+              </div>
+              <div class="search-results" id="searchResults"></div>
+            </article>
+            <article class="preview-pane">
+              <div class="section-heading">
+                <h3>来源预览</h3>
+                <button type="button" id="usePreview">使用这个版本</button>
+              </div>
+              <div class="preview-box" id="mergedPreview"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="workspace-section workspace-step">
+          <div class="step-heading">
+            <span>2</span>
+            <div>
+              <h2>工作源编辑和生成</h2>
+              <p class="meta-line">这里编辑原文、译文和读音源；AI 只写回工作源，不覆盖正式歌词。</p>
+            </div>
+          </div>
+          <div class="source-editor-grid">
+            <article>
+              <h3>原文 LRC</h3>
+              <textarea id="workspaceOriginalLrc" class="source-textarea" spellcheck="false" placeholder="该版本没有原文 LRC"></textarea>
+            </article>
+            <article>
+              <h3>翻译 LRC</h3>
+              <textarea id="workspaceTranslationLrc" class="source-textarea" spellcheck="false" placeholder="该版本没有译文"></textarea>
+            </article>
+            <article>
+              <h3>罗马音 / 注音 LRC</h3>
+              <textarea id="workspaceRomanLrc" class="source-textarea" spellcheck="false" placeholder="该版本没有罗马音/读音"></textarea>
+            </article>
+          </div>
+          <div class="step-actions">
+            <button type="button" id="saveWorkspace">保存工作源</button>
+            <button type="button" id="realignWorkspace">重新对齐</button>
+            <button type="button" id="generateWorkspaceRuby">AI 生成 ruby JSON</button>
+          </div>
+        </section>
+
+        <section class="workspace-section workspace-step">
+          <div class="step-heading">
+            <span>3</span>
+            <div>
+              <h2>检查并发布</h2>
+              <p class="meta-line">确认生成结果后再发布到正式歌词，播放器只读取正式歌词。</p>
+            </div>
+          </div>
+          <div class="section-heading">
+            <h3>生成结果预览</h3>
+            <span class="meta-line" id="generatedSummary">尚未生成</span>
+          </div>
+          <div class="step-actions">
+            <button type="button" id="previewGenerated">预览生成结果</button>
+            <button type="button" id="publishWorkspace">发布为正式歌词</button>
+          </div>
+          <div class="generated-preview" id="generatedPreviewBox"></div>
+        </section>
+      </section>
     </main>
   </div>
 

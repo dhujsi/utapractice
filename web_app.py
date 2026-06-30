@@ -4,10 +4,18 @@ import os
 import re
 import shutil
 import threading
+import time
+import unicodedata
 import uuid
+import base64
+import html
+from html.parser import HTMLParser
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 import librosa
 import soundfile as sf
@@ -22,6 +30,7 @@ DB_PATH = BASE_DIR / "song_db.json"
 GENERATED_DIR = BASE_DIR / "generated"
 SETTINGS_PATH = BASE_DIR / "settings.local.json"
 JOBS_PATH = BASE_DIR / "lyrics_jobs.json"
+DEFAULT_MODEL = "deepseek-v4-pro"
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".m4a"}
 LYRICS_EXTENSIONS = {".json", ".lrc"}
@@ -52,9 +61,9 @@ def save_db(db_data):
 
 def load_settings():
     if SETTINGS_PATH.exists():
-        with SETTINGS_PATH.open("r", encoding="utf-8") as f:
+        with SETTINGS_PATH.open("r", encoding="utf-8-sig") as f:
             return json.load(f)
-    return {"base_url": "", "api_key": "", "model": "gpt-4.1-mini"}
+    return {"base_url": "", "api_key": "", "model": DEFAULT_MODEL}
 
 
 def save_settings(settings):
@@ -145,6 +154,8 @@ def find_available_songs():
         suffix = path.suffix.lower()
         if suffix not in AUDIO_EXTENSIONS | LYRICS_EXTENSIONS:
             continue
+        if path.name.endswith(".lyrics_source.json"):
+            continue
         if path.stem.startswith("temp_"):
             continue
         item = songs.setdefault(path.stem, {"name": path.stem, "audio_path": None, "lyrics_path": None})
@@ -213,14 +224,32 @@ def parse_lrc_timestamps(text):
 
 
 def parse_model_json(content):
-    content = (content or "").strip()
-    if content.startswith("```"):
-        content = re.sub(r"^```(?:json)?\s*", "", content)
-        content = re.sub(r"\s*```$", "", content)
-    return json.loads(content)
+    raw = str(content or "").strip()
+    if not raw:
+        raise ValueError("模型返回空内容，不是 JSON")
+
+    candidates = [raw]
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw, flags=re.I)
+    if fenced:
+        candidates.insert(0, fenced.group(1).strip())
+
+    starts = [index for index in [raw.find("{"), raw.find("[")] if index >= 0]
+    ends = [index for index in [raw.rfind("}"), raw.rfind("]")] if index >= 0]
+    if starts and ends and min(starts) < max(ends):
+        candidates.append(raw[min(starts) : max(ends) + 1].strip())
+
+    last_error = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+
+    excerpt = re.sub(r"\s+", " ", raw)[:360]
+    raise ValueError(f"模型返回的不是合法 JSON：{last_error}；返回片段：{excerpt}")
 
 
-def chat_json(client, model, system_prompt, payload, max_tokens=None):
+def chat_json(client, model, system_prompt, payload, max_tokens=None, json_object=False):
     kwargs = {
         "model": model,
         "messages": [
@@ -231,8 +260,75 @@ def chat_json(client, model, system_prompt, payload, max_tokens=None):
     }
     if max_tokens:
         kwargs["max_tokens"] = max_tokens
-    completion = client.chat.completions.create(**kwargs)
+    if json_object:
+        kwargs["response_format"] = {"type": "json_object"}
+    try:
+        completion = client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        message = str(exc).lower()
+        unsupported_json_mode = any(term in message for term in ["response_format", "json_object", "unsupported", "invalid parameter"])
+        if not json_object or not unsupported_json_mode:
+            raise
+        kwargs.pop("response_format", None)
+        completion = client.chat.completions.create(**kwargs)
     return parse_model_json(completion.choices[0].message.content)
+
+
+RUBY_GENERATION_SYSTEM_PROMPT = """You are a highly precise karaoke lyric alignment and ruby annotation engine.
+Your sole task is to inject `<ruby>` tags based on provided pronunciations and output strictly in JSON format.
+
+### CORE CONSTRAINTS
+1. JSON ONLY: Output a single valid JSON object/array matching the requested schema. Do not include markdown code blocks, explanations, or preamble.
+2. STRICT TEXT PRESERVATION: After removing `<ruby>`, `<rt>`, and `<rp>` tags from `original_html`, the remaining visible text MUST perfectly match the input `original` text character by character.
+   - NEVER normalize, modernize, translate, or rewrite text. For example, keep 未來 as 未來, do not change it to 未来.
+   - Preserve all spaces and punctuation exactly.
+
+### RUBY ANNOTATION RULES
+1. Target Characters: Add ruby ONLY to characters that require pronunciation hints, such as Kanji in Japanese or specific Hanzi in Chinese. DO NOT add ruby to Kana, standard English, or romaji.
+2. Structure: Use the format `<ruby>Base<rt>Reading</rt></ruby>`. Never append readings inline. For example, output `<ruby>君<rt>きみ</rt></ruby>が`, NEVER `君きみが`.
+3. Okurigana for Japanese: The `<rt>` tag must only contain the reading for the Kanji. The okurigana remains outside.
+   - Correct: `<ruby>渇<rt>かわ</rt></ruby>いた`
+   - Incorrect: `<ruby>渇<rt>か</rt></ruby>いた` or `<ruby>渇い<rt>かわい</rt></ruby>た`
+4. Missing or Uncertain Readings: If a reading is uncertain or missing in the source, leave the character unannotated.
+
+### DATA HANDLING
+1. Translations: Put translations ONLY in the `translation` field. NEVER put translations, meanings, or `<br>` tags inside `original_html`.
+2. Metadata: Do not invent lyrics, timestamps, or copy global metadata such as artist/title/credits into item rows.
+3. Consistency: Keep the exact same number of items and order as the input target rows."""
+
+
+CLEAN_SOURCE_SYSTEM_PROMPT = """You are a precise data extraction assistant. Your task is to clean raw karaoke source text.
+
+### RULES
+1. Output strictly in JSON format without markdown wrappers.
+2. KEEP: Actual lyric lines, their translations, and pronunciation annotations such as ruby, furigana, or jyutping.
+3. REMOVE: Song titles, artist names, metadata credits, blank lines, purely romaji-only lines unless they are the actual sung lyric, and commentary.
+4. Do not invent or modify the lyrics."""
+
+
+def unwrap_items_result(result, label):
+    if isinstance(result, dict) and isinstance(result.get("items"), list):
+        return result["items"]
+    if isinstance(result, list):
+        return result
+    raise ValueError(f"{label} response must be a JSON array or an object with an items array")
+
+
+def ruby_rows_for_model(rows, include_time=False):
+    model_rows = []
+    for position, row in enumerate(rows, start=1):
+        item = {
+            "row_number": position,
+            "original": str(row.get("original", row.get("text", "")) or ""),
+            "translation": str(row.get("translation", "") or ""),
+            "roman_or_pronunciation": str(row.get("roman", row.get("roman_or_pronunciation", "")) or ""),
+        }
+        if include_time:
+            item["time"] = row.get("time", 0)
+        if row.get("index") is not None:
+            item["source_index"] = row.get("index")
+        model_rows.append(item)
+    return model_rows
 
 
 def chunk_rows(rows, size=12, context=2):
@@ -262,6 +358,627 @@ def group_lrc_rows(rows):
             grouped[-1]["texts"].append(text)
             grouped[-1]["text"] = " / ".join(grouped[-1]["texts"])
     return grouped
+
+
+def workspace_path(name):
+    return SONG_DIR / f"{sanitize_filename(name)}.lyrics_source.json"
+
+
+def read_json_path(path, default=None):
+    if not path.exists():
+        return default
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def write_json_path(path, payload):
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+
+def fetch_json(url, headers=None, timeout=10):
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0 utapractice", **(headers or {})})
+    with urlopen(request, timeout=timeout) as response:
+        data = response.read().decode("utf-8", errors="replace")
+    return json.loads(data)
+
+
+def normalize_search_result(provider, source_song_id, title="", artist="", album="", duration=None, **extra):
+    return {
+        "provider": provider,
+        "source_song_id": str(source_song_id),
+        "title": title or "",
+        "artist": artist or "",
+        "album": album or "",
+        "duration": duration,
+        "has_original": bool(extra.pop("has_original", True)),
+        "has_translation": bool(extra.pop("has_translation", False)),
+        "has_roman": bool(extra.pop("has_roman", False)),
+        "has_word_timing": bool(extra.pop("has_word_timing", False)),
+        "score": extra.pop("score", None),
+        "match_hint": extra.pop("match_hint", ""),
+        "source_data": extra,
+    }
+
+
+def text_match_score(query, value):
+    query_text = str(query or "").strip().lower()
+    value_text = str(value or "").strip().lower()
+    if not query_text or not value_text:
+        return 0
+    if query_text == value_text:
+        return 1
+    query_key = compact_match_text(query_text)
+    value_key = compact_match_text(value_text)
+    if query_key and query_key == value_key:
+        return 0.98
+    if query_text in value_text or value_text in query_text or (query_key and (query_key in value_key or value_key in query_key)):
+        return 0.92
+    return max(SequenceMatcher(None, query_text, value_text).ratio(), SequenceMatcher(None, query_key, value_key).ratio())
+
+
+def compact_match_text(value):
+    value = unicodedata.normalize("NFKC", str(value or "")).lower()
+    return re.sub(r"[\s\-_.,，。・·:：'\"“”‘’!?！？()\[\]（）【】<>《》]+", "", value)
+
+
+def duration_match_score(expected, actual):
+    try:
+        expected_value = float(expected)
+        actual_value = float(actual)
+    except (TypeError, ValueError):
+        return 0
+    if expected_value <= 0 or actual_value <= 0:
+        return 0
+    delta = abs(expected_value - actual_value)
+    if delta <= 2:
+        return 1
+    if delta <= 6:
+        return 0.85
+    if delta <= 15:
+        return 0.55
+    if delta <= 30:
+        return 0.25
+    return 0
+
+
+PROVIDER_PRIORITY = {"netease": 0, "qq": 1, "kugou": 2, "lrclib": 3}
+
+
+def rank_search_result(item, song_name, artist="", album="", duration=None, source_order=0):
+    title_score = text_match_score(song_name, item.get("title", ""))
+    artist_score = text_match_score(artist, item.get("artist", "")) if artist else 0.75
+    album_score = text_match_score(album, item.get("album", "")) if album else 0
+    duration_score = duration_match_score(duration, item.get("duration"))
+    provider_score = min(max(float(item.get("score") or 0), 0), 1)
+    source_relevance = max(0, 1 - min(max(int(source_order), 0), 9) * 0.18)
+    availability_bonus = 0
+    if item.get("has_translation"):
+        availability_bonus += 0.025
+    if item.get("has_roman"):
+        availability_bonus += 0.015
+    if item.get("has_word_timing"):
+        availability_bonus += 0.015
+    score = (
+        title_score * 0.58
+        + artist_score * 0.18
+        + album_score * 0.05
+        + duration_score * 0.05
+        + source_relevance * 0.18
+        + provider_score * 0.025
+        + availability_bonus
+    )
+    return round(min(score, 1), 4)
+
+
+def search_lrclib(song_name, artist="", album=""):
+    query = {"track_name": song_name, "artist_name": artist, "album_name": album}
+    data = fetch_json(f"https://lrclib.net/api/search?{urlencode({k: v for k, v in query.items() if v})}")
+    results = []
+    for item in data[:10]:
+        has_synced = bool(item.get("syncedLyrics"))
+        results.append(
+            normalize_search_result(
+                "lrclib",
+                item.get("id"),
+                item.get("trackName"),
+                item.get("artistName"),
+                item.get("albumName"),
+                item.get("duration"),
+                has_original=has_synced or bool(item.get("plainLyrics")),
+                has_translation=False,
+                has_roman=False,
+                has_word_timing=False,
+                score=1 if has_synced else 0.6,
+            )
+        )
+    return results
+
+
+def search_netease(song_name, artist="", album=""):
+    keyword = " ".join(part for part in [song_name, artist] if part)
+    url = "https://music.163.com/api/search/get/web?" + urlencode({"s": keyword, "type": 1, "offset": 0, "limit": 10})
+    data = fetch_json(url, headers={"Referer": "https://music.163.com/"})
+    songs = data.get("result", {}).get("songs", []) if isinstance(data, dict) else []
+    results = []
+    for item in songs:
+        artists = "/".join(artist_item.get("name", "") for artist_item in item.get("artists", []))
+        results.append(
+            normalize_search_result(
+                "netease",
+                item.get("id"),
+                item.get("name"),
+                artists,
+                item.get("album", {}).get("name", ""),
+                round((item.get("duration") or 0) / 1000) or None,
+                has_original=True,
+                has_translation=True,
+                has_roman=False,
+                has_word_timing=False,
+            )
+        )
+    return results
+
+
+def search_qq(song_name, artist="", album=""):
+    keyword = " ".join(part for part in [song_name, artist] if part)
+    url = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?" + urlencode(
+        {"w": keyword, "format": "json", "p": 1, "n": 10, "cr": 1}
+    )
+    data = fetch_json(url, headers={"Referer": "https://y.qq.com/"})
+    songs = data.get("data", {}).get("song", {}).get("list", []) if isinstance(data, dict) else []
+    results = []
+    for item in songs:
+        artists = "/".join(artist_item.get("name", "") for artist_item in item.get("singer", []))
+        results.append(
+            normalize_search_result(
+                "qq",
+                item.get("songmid") or item.get("mid"),
+                item.get("songname") or item.get("name"),
+                artists,
+                item.get("albumname") or item.get("album", {}).get("name", ""),
+                item.get("interval"),
+                has_original=True,
+                has_translation=True,
+                has_roman=False,
+                has_word_timing=False,
+            )
+        )
+    return results
+
+
+def search_kugou(song_name, artist="", album=""):
+    keyword = " ".join(part for part in [song_name, artist] if part)
+    url = "https://songsearch.kugou.com/song_search_v2?" + urlencode({"keyword": keyword, "page": 1, "pagesize": 10})
+    data = fetch_json(url)
+    songs = data.get("data", {}).get("lists", []) if isinstance(data, dict) else []
+    results = []
+    for item in songs:
+        results.append(
+            normalize_search_result(
+                "kugou",
+                item.get("FileHash") or item.get("Hash"),
+                item.get("SongName"),
+                item.get("SingerName"),
+                item.get("AlbumName"),
+                item.get("Duration"),
+                has_original=True,
+                has_translation=False,
+                has_roman=False,
+                has_word_timing=False,
+                album_id=item.get("AlbumID"),
+                file_hash=item.get("FileHash") or item.get("Hash"),
+            )
+        )
+    return results
+
+
+SEARCH_PROVIDERS = {
+    "lrclib": search_lrclib,
+    "netease": search_netease,
+    "qq": search_qq,
+    "kugou": search_kugou,
+}
+
+
+def preview_lrclib(result):
+    source_id = result.get("source_song_id")
+    data = fetch_json(f"https://lrclib.net/api/get/{source_id}")
+    return {
+        "original_lrc": data.get("syncedLyrics") or "",
+        "translation_lrc": "",
+        "roman_lrc": "",
+    }
+
+
+def preview_netease(result):
+    source_id = result.get("source_song_id")
+    data = fetch_json(
+        "https://music.163.com/api/song/lyric?" + urlencode({"id": source_id, "lv": 1, "kv": 1, "tv": -1, "rv": 1}),
+        headers={"Referer": "https://music.163.com/"},
+    )
+    return {
+        "original_lrc": data.get("lrc", {}).get("lyric", "") or "",
+        "translation_lrc": data.get("tlyric", {}).get("lyric", "") or "",
+        "roman_lrc": data.get("romalrc", {}).get("lyric", "") or "",
+    }
+
+
+def preview_qq(result):
+    songmid = result.get("source_song_id")
+    url = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?" + urlencode(
+        {"songmid": songmid, "g_tk": 5381, "format": "json", "nobase64": 1}
+    )
+    data = fetch_json(url, headers={"Referer": "https://y.qq.com/"})
+    return {
+        "original_lrc": data.get("lyric", "") or "",
+        "translation_lrc": data.get("trans", "") or "",
+        "roman_lrc": data.get("roma", "") or "",
+    }
+
+
+def preview_kugou(result):
+    source = result.get("source_data", {})
+    keyword = " ".join(part for part in [result.get("title"), result.get("artist")] if part)
+    search_url = "https://lyrics.kugou.com/search?" + urlencode(
+        {"ver": 1, "man": "yes", "client": "pc", "keyword": keyword, "duration": result.get("duration") or 0, "hash": source.get("file_hash") or result.get("source_song_id")}
+    )
+    search_data = fetch_json(search_url)
+    candidates = search_data.get("candidates", []) if isinstance(search_data, dict) else []
+    if not candidates:
+        return {"original_lrc": "", "translation_lrc": "", "roman_lrc": ""}
+    candidate = candidates[0]
+    download_url = "https://lyrics.kugou.com/download?" + urlencode(
+        {"ver": 1, "client": "pc", "id": candidate.get("id"), "accesskey": candidate.get("accesskey"), "fmt": "lrc", "charset": "utf8"}
+    )
+    data = fetch_json(download_url)
+    content = data.get("content", "")
+    try:
+        lyric = base64.b64decode(content).decode("utf-8", errors="replace") if content else ""
+    except Exception:
+        lyric = ""
+    return {"original_lrc": lyric, "translation_lrc": "", "roman_lrc": ""}
+
+
+PREVIEW_PROVIDERS = {
+    "lrclib": preview_lrclib,
+    "netease": preview_netease,
+    "qq": preview_qq,
+    "kugou": preview_kugou,
+}
+
+
+def nearest_text(rows, time_value, max_distance=0.75):
+    if not rows:
+        return ""
+    exact = [row["text"] for row in rows if float(row["time"]) == float(time_value) and row.get("text")]
+    if exact:
+        return " / ".join(exact)
+    nearest = min(rows, key=lambda row: abs(float(row["time"]) - float(time_value)))
+    if abs(float(nearest["time"]) - float(time_value)) <= max_distance:
+        return nearest.get("text", "")
+    return ""
+
+
+def align_lrc_sources(original_lrc, translation_lrc="", roman_lrc=""):
+    original_rows = group_lrc_rows(parse_lrc_timestamps(original_lrc))
+    translation_rows = group_lrc_rows(parse_lrc_timestamps(translation_lrc))
+    roman_rows = group_lrc_rows(parse_lrc_timestamps(roman_lrc))
+    line_rows = []
+    for index, row in enumerate(original_rows):
+        line_rows.append(
+            {
+                "index": index,
+                "time": row["time"],
+                "original": row.get("text", ""),
+                "translation": nearest_text(translation_rows, row["time"]),
+                "roman": nearest_text(roman_rows, row["time"]),
+            }
+        )
+    return line_rows
+
+
+def workspace_from_preview(song_name, artist, result, preview):
+    original_lrc = preview.get("original_lrc", "") or ""
+    translation_lrc = preview.get("translation_lrc", "") or ""
+    roman_lrc = preview.get("roman_lrc", "") or ""
+    return {
+        "song_name": song_name,
+        "artist": artist or "",
+        "source": {
+            "provider": result.get("provider", ""),
+            "song_id": result.get("source_song_id", ""),
+            "album": result.get("album", ""),
+            "duration": result.get("duration"),
+        },
+        "original_lrc": original_lrc,
+        "translation_lrc": translation_lrc,
+        "roman_lrc": roman_lrc,
+        "line_rows": align_lrc_sources(original_lrc, translation_lrc, roman_lrc),
+        "generated_lyrics": [],
+        "status": "draft",
+        "updated_at": now_iso(),
+    }
+
+
+def serialize_preview(result, preview):
+    original_lrc = preview.get("original_lrc", "") or ""
+    translation_lrc = preview.get("translation_lrc", "") or ""
+    roman_lrc = preview.get("roman_lrc", "") or ""
+    line_rows = align_lrc_sources(original_lrc, translation_lrc, roman_lrc)
+    return {
+        "result": result,
+        "original_lrc": original_lrc,
+        "translation_lrc": translation_lrc,
+        "roman_lrc": roman_lrc,
+        "line_rows": line_rows,
+        "has_translation": bool(translation_lrc.strip()),
+        "has_roman": bool(roman_lrc.strip()),
+    }
+
+
+def safe_ruby_html(value):
+    value = str(value or "")
+    placeholders = []
+
+    def stash(match):
+        index = len(placeholders)
+        tag = match.group(0).lower()
+        tag = re.sub(r"\s+", "", tag)
+        placeholders.append(tag)
+        return f"@@RUBY_TAG_{index}@@"
+
+    protected = re.sub(r"</?\s*(?:ruby|rt|rp)\s*>", stash, value, flags=re.I)
+    escaped = html.escape(protected, quote=False)
+    for index, tag in enumerate(placeholders):
+        escaped = escaped.replace(f"@@RUBY_TAG_{index}@@", tag)
+    return escaped
+
+
+def fallback_generated_row(row):
+    return {
+        "time": row.get("time", 0),
+        "original_html": html.escape(str(row.get("original", "") or ""), quote=False),
+        "translation": str(row.get("translation", "") or "").strip(),
+    }
+
+
+def legacy_lenient_normalize_workspace_generated_chunk(result, target_rows, report):
+    normalized_by_index = {}
+    warnings = []
+    if not isinstance(result, list):
+        warnings.append("模型返回值不是数组，本段使用原文兜底")
+        result = []
+
+    target_by_index = {int(row["index"]): row for row in target_rows}
+    for fallback_order, item in enumerate(result):
+        if not isinstance(item, dict):
+            continue
+        raw_index = item.get("index")
+        try:
+            row_index = int(raw_index)
+        except (TypeError, ValueError):
+            if fallback_order < len(target_rows):
+                row_index = int(target_rows[fallback_order]["index"])
+                warnings.append(f"模型第 {fallback_order + 1} 条缺少 index，已按顺序归入 {row_index}")
+            else:
+                continue
+        if row_index not in target_by_index:
+            warnings.append(f"模型返回了目标外 index {row_index}，已忽略")
+            continue
+        source = target_by_index[row_index]
+        if lyric_base_key(original_html) != lyric_base_key(source.get("original", "")):
+            raise ValueError(
+                f"index {row_index} 的原文被改写或读音被拼进正文：期望 {source.get('original', '')}，得到 {strip_html(original_html)}"
+            )
+        normalized_by_index[row_index] = {
+            "time": source.get("time", item.get("time", 0)),
+            "original_html": safe_ruby_html(item.get("original_html", source.get("original", ""))),
+            "translation": str(item.get("translation", source.get("translation", "")) or "").strip(),
+        }
+
+    merged = []
+    for row in target_rows:
+        row_index = int(row["index"])
+        item = normalized_by_index.get(row_index)
+        if not item:
+            warnings.append(f"index {row_index} 未返回，已用原文兜底")
+            item = fallback_generated_row(row)
+        merged.append(item)
+
+    for warning in warnings[:6]:
+        report(f"提示：{warning}")
+    if len(warnings) > 6:
+        report(f"提示：本段还有 {len(warnings) - 6} 条索引修正信息")
+    return merged
+
+
+def strip_html(value):
+    text = str(value or "")
+    text = re.sub(r"<\s*(?:rt|rp)\b[^>]*>.*?<\s*/\s*(?:rt|rp)\s*>", "", text, flags=re.I | re.S)
+    return re.sub(r"<[^>]+>", "", text).strip()
+
+
+def lyric_base_key(value):
+    text = html.unescape(strip_html(value))
+    for _ in range(2):
+        next_text = html.unescape(text)
+        if next_text == text:
+            break
+        text = next_text
+    text = unicodedata.normalize("NFKC", text)
+    return re.sub(r"\s+", "", text)
+
+
+class RubyStructureParser(HTMLParser):
+    allowed_tags = {"ruby", "rt", "rp"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.stack = []
+        self.errors = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag not in self.allowed_tags:
+            self.errors.append(f"不允许的 HTML 标签 <{tag}>")
+            return
+        if tag in {"rt", "rp"} and "ruby" not in self.stack:
+            self.errors.append(f"<{tag}> 不在 <ruby> 内")
+        self.stack.append(tag)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag not in self.allowed_tags:
+            self.errors.append(f"不允许的 HTML 结束标签 </{tag}>")
+            return
+        if tag not in self.stack:
+            self.errors.append(f"多余的结束标签 </{tag}>")
+            return
+        while self.stack:
+            current = self.stack.pop()
+            if current == tag:
+                break
+            self.errors.append(f"<{current}> 在 </{tag}> 前未闭合")
+
+    def close(self):
+        super().close()
+        for tag in reversed(self.stack):
+            self.errors.append(f"<{tag}> 未闭合")
+        self.stack.clear()
+
+
+def validate_ruby_structure(value):
+    parser = RubyStructureParser()
+    try:
+        parser.feed(str(value or ""))
+        parser.close()
+    except Exception as exc:
+        return [f"HTML 解析失败：{exc}"]
+    return parser.errors
+
+
+def normalize_workspace_generated_chunk(result, target_rows, report):
+    if isinstance(result, dict) and isinstance(result.get("items"), list):
+        result = result["items"]
+    if not isinstance(result, list):
+        raise ValueError("模型返回值不是 JSON 数组，也不是带 items 数组的对象")
+
+    target_by_index = {int(row["index"]): row for row in target_rows}
+    expected_indexes = set(target_by_index)
+    normalized_by_index = {}
+    extra_indexes = []
+    invalid_items = []
+
+    def normalize_one(item, source, label):
+        if not isinstance(item, dict):
+            raise ValueError(f"{label} 不是对象")
+        original_html = safe_ruby_html(item.get("original_html", ""))
+        ruby_errors = validate_ruby_structure(original_html)
+        if ruby_errors:
+            raise ValueError(f"{label} 的 ruby HTML 结构非法：{ruby_errors[0]}")
+        if lyric_base_key(original_html) != lyric_base_key(source.get("original", "")):
+            raise ValueError(
+                f"{label} 的原文被改写或读音被拼进正文：期望 {source.get('original', '')}，得到 {strip_html(original_html)}"
+            )
+        if str(source.get("original", "") or "").strip() and not strip_html(original_html):
+            raise ValueError(f"{label} 的 original_html 为空")
+        return {
+            "time": source.get("time", 0),
+            "original_html": original_html,
+            "translation": str(item.get("translation", source.get("translation", "")) or "").strip(),
+        }
+
+    if len(result) == len(target_rows):
+        return [normalize_one(item, source, f"第 {position} 条") for position, (item, source) in enumerate(zip(result, target_rows), start=1)]
+
+    row_number_items = {}
+    row_number_invalid = []
+    for position, item in enumerate(result, start=1):
+        if not isinstance(item, dict) or item.get("row_number") is None:
+            continue
+        try:
+            row_number = int(item.get("row_number"))
+        except (TypeError, ValueError):
+            row_number_invalid.append(f"第 {position} 条 row_number 无效")
+            continue
+        if 1 <= row_number <= len(target_rows):
+            row_number_items[row_number] = item
+        else:
+            row_number_invalid.append(f"第 {position} 条 row_number 超出本段范围：{row_number}")
+    if row_number_items:
+        missing_row_numbers = [row_number for row_number in range(1, len(target_rows) + 1) if row_number not in row_number_items]
+        if row_number_invalid or missing_row_numbers:
+            parts = row_number_invalid[:3]
+            if missing_row_numbers:
+                parts.append(f"缺少本段 row_number：{missing_row_numbers[:6]}")
+            raise ValueError("；".join(parts))
+        return [
+            normalize_one(row_number_items[row_number], target_rows[row_number - 1], f"row_number {row_number}")
+            for row_number in range(1, len(target_rows) + 1)
+        ]
+
+    for position, item in enumerate(result, start=1):
+        if not isinstance(item, dict):
+            invalid_items.append(f"第 {position} 条不是对象")
+            continue
+        try:
+            row_index = int(item.get("index"))
+        except (TypeError, ValueError):
+            invalid_items.append(f"第 {position} 条缺少有效 index")
+            continue
+        if row_index not in target_by_index:
+            extra_indexes.append(row_index)
+            continue
+
+        source = target_by_index[row_index]
+        normalized_by_index[row_index] = normalize_one(item, source, f"index {row_index}")
+
+    missing_indexes = sorted(expected_indexes - set(normalized_by_index))
+    if invalid_items or extra_indexes or missing_indexes:
+        parts = []
+        if invalid_items:
+            parts.append("；".join(invalid_items[:3]))
+        if extra_indexes:
+            parts.append(f"返回了目标外 index：{extra_indexes[:6]}")
+        if missing_indexes:
+            parts.append(f"缺少 index：{missing_indexes[:6]}")
+        raise ValueError("；".join(parts))
+
+    return [normalized_by_index[int(row["index"])] for row in target_rows]
+
+
+def validate_generated_workspace_lyrics(generated, rows):
+    errors = []
+    if not isinstance(generated, list):
+        return ["生成结果不是 JSON 数组"]
+    if len(generated) != len(rows):
+        errors.append(f"行数不一致：期望 {len(rows)}，得到 {len(generated)}")
+    for position, row in enumerate(rows[: len(generated)]):
+        item = generated[position]
+        if not isinstance(item, dict):
+            errors.append(f"第 {position + 1} 行不是对象")
+            continue
+        try:
+            expected_time = float(row.get("time", 0))
+            actual_time = float(item.get("time", 0))
+        except (TypeError, ValueError):
+            errors.append(f"第 {position + 1} 行 time 不是数字")
+            continue
+        if abs(expected_time - actual_time) > 0.001:
+            errors.append(f"第 {position + 1} 行 time 被修改：期望 {expected_time}，得到 {actual_time}")
+        if str(row.get("original", "") or "").strip() and not strip_html(item.get("original_html", "")):
+            errors.append(f"第 {position + 1} 行 original_html 为空")
+        ruby_errors = validate_ruby_structure(item.get("original_html", ""))
+        if ruby_errors:
+            errors.append(f"第 {position + 1} 行 ruby HTML 结构非法：{ruby_errors[0]}")
+        if lyric_base_key(item.get("original_html", "")) != lyric_base_key(row.get("original", "")):
+            errors.append(
+                f"第 {position + 1} 行原文被改写或读音被拼进正文：期望 {row.get('original', '')}，得到 {strip_html(item.get('original_html', ''))}"
+            )
+        if item.get("translation") is not None and not isinstance(item.get("translation"), str):
+            errors.append(f"第 {position + 1} 行 translation 不是字符串")
+    return errors
 
 
 def normalize_lyric_text(text):
@@ -421,25 +1138,20 @@ def perform_lyrics_conversion(payload, report=lambda _message: None, job_id=None
     report(f"已读取 {len(rows)} 行带时间轴歌词，合并为 {len(target_rows)} 个时间点")
 
     client = OpenAI(api_key=settings["api_key"], base_url=settings.get("base_url") or None)
-    model = settings.get("model") or "gpt-4.1-mini"
+    model = settings.get("model") or "deepseek-v4-pro"
     raise_if_stopped(job_id)
 
     report("正在清理注音文本")
     cleaned = chat_json(
         client,
         model,
-        "You clean annotated karaoke source text. Output valid JSON only.",
+        CLEAN_SOURCE_SYSTEM_PROMPT,
         {
-            "task": "Clean source text before lyric alignment.",
-            "input_text": annotated_text,
+            "task": "Extract and clean lyric lines.",
             "output_schema": {"lines": ["lyric line with ruby/furigana/jyutping if present"]},
-            "rules": [
-                "Remove unrelated headers, song title lines, artist names, credits, blank lines, romaji-only lines, and commentary.",
-                "Keep real lyric lines, translations, and pronunciation annotations.",
-                "Do not invent lyrics.",
-                "Return JSON only with a lines array.",
-            ],
+            "input_text": annotated_text,
         },
+        json_object=True,
     )
     raise_if_stopped(job_id)
     cleaned_lines = cleaned.get("lines", []) if isinstance(cleaned, dict) else []
@@ -454,35 +1166,34 @@ def perform_lyrics_conversion(payload, report=lambda _message: None, job_id=None
         converted = chat_json(
             client,
             model,
-            "You align a full timed lyric file with cleaned annotated source text. Output valid JSON only.",
+            RUBY_GENERATION_SYSTEM_PROMPT,
             {
-                "task": "Create full karaoke lyric JSON with ruby annotations.",
-                "mode": "stable_full_song_after_cleaning",
-                "schema": [{"time": 12.34, "original_html": "text with <ruby>字<rt>reading</rt></ruby>", "translation": ""}],
-                "lrc_rows": target_rows,
-                "cleaned_annotated_lines": [{"index": i, "text": line} for i, line in enumerate(cleaned_lines)],
-                "rules": [
-                    "Return exactly one JSON array item for every lrc_rows item; lrc_rows may already merge original and translated LRC lines with the same timestamp.",
-                    "Keep lrc_rows order and use each lrc_rows time value exactly.",
-                    "The cleaned source line count may not match the LRC row count.",
-                    "Use the cleaned source as reference for ruby/furigana/jyutping, not as a row-by-row contract.",
-                    "original_html MUST use <ruby>字<rt>reading</rt></ruby> for EVERY character whose pronunciation appears in the cleaned source. Ruby annotations are MANDATORY — never skip or omit them.",
-                        "If the cleaned source contains furigana, jyutping, or any reading for a character, that reading MUST appear in the output using ruby tags. Do not discard readings.",
-                        "original_html is only the sung lyric in the original language — no translations, no explanations.",
-                    "Never put Chinese translation, explanation, or meaning text in original_html.",
-                    "Do not use <br> to append translation inside original_html.",
-                    "Do not output song title, artist, lyricist, composer, arranger, or credit lines.",
-                    "If a translation is available for a lyric row, put it in that same row's translation field.",
-                    "Never create a row with empty original_html just to hold translation.",
-                    "translation must contain only the Chinese translation as plain text without HTML; use an empty string if unclear.",
-                    "Do not include romaji-only text unless it is the actual lyric.",
-                    "Do not wrap the answer in markdown.",
-                ],
+                "task": "Generate ruby annotated timed lyric JSON.",
+                "metadata": {
+                    "mode": "stable_full_song_after_cleaning",
+                    "expected_item_count": len(target_rows),
+                },
+                "output_schema": {
+                    "items": [
+                        {
+                            "time": 12.34,
+                            "original_html": "lyrics with <ruby>漢字<rt>かんじ</rt></ruby>",
+                            "translation": "plain translation string or empty",
+                        }
+                    ]
+                },
+                "input_data": {
+                    "target_rows": ruby_rows_for_model(target_rows, include_time=True),
+                    "pronunciation_reference_lines": [
+                        {"index": i, "text": line}
+                        for i, line in enumerate(cleaned_lines)
+                    ],
+                },
             },
+            json_object=True,
         )
         raise_if_stopped(job_id)
-        if not isinstance(converted, list):
-            raise ValueError("Stable generation response must be a JSON array")
+        converted = unwrap_items_result(converted, "Stable generation")
         if len(converted) != len(target_rows):
             report(f"数量提示：目标时间点 {len(target_rows)} 个，模型返回 {len(converted)} 条；已继续保存，请人工检查断句")
         converted = normalize_converted_lyrics(converted)
@@ -499,38 +1210,34 @@ def perform_lyrics_conversion(payload, report=lambda _message: None, job_id=None
             chunk_result = chat_json(
                 client,
                 model,
-                "You align timed lyrics with annotated source text. Output valid JSON only.",
+                RUBY_GENERATION_SYSTEM_PROMPT,
                 {
-                    "task": "Create one chunk of karaoke lyric JSON with ruby annotations.",
-                    "chunk_index": index,
-                    "total_chunks": len(chunks),
-                    "schema": [{"time": 12.34, "original_html": "text with <ruby>字<rt>reading</rt></ruby>", "translation": ""}],
-                    "target_rows": chunk["target_rows"],
-                    "context_rows": chunk["context_rows"],
-                    "candidate_annotated_lines": candidate_lines,
-                    "rules": [
-                        "Return exactly one JSON array item for every target_rows item; target_rows may already merge original and translated LRC lines with the same timestamp.",
-                        "Keep target_rows order and use each target time value exactly.",
-                        "Use context_rows only for continuity; do not output context-only rows.",
-                        "Prefer candidate_annotated_lines, using their indexes only as source references.",
-                        "The source line count may not match the LRC row count because it may include translations or removed romaji.",
-                        "original_html MUST use <ruby>字<rt>reading</rt></ruby> for EVERY character whose pronunciation appears in the cleaned source. Ruby annotations are MANDATORY — never skip or omit them.",
-                        "If the cleaned source contains furigana, jyutping, or any reading for a character, that reading MUST appear in the output using ruby tags. Do not discard readings.",
-                        "original_html is only the sung lyric in the original language — no translations, no explanations.",
-                        "Never put Chinese translation, explanation, or meaning text in original_html.",
-                        "Do not use <br> to append translation inside original_html.",
-                        "Do not output song title, artist, lyricist, composer, arranger, or credit lines.",
-                        "If a translation is available for a lyric row, put it in that same row's translation field.",
-                        "Never create a row with empty original_html just to hold translation.",
-                        "translation must contain only the Chinese translation as plain text without HTML; use an empty string if unclear.",
-                        "Do not include romaji-only text unless it is the actual lyric.",
-                        "Do not wrap the answer in markdown.",
-                    ],
+                    "task": "Generate ruby annotated timed lyric JSON.",
+                    "metadata": {
+                        "mode": "chunked",
+                        "chunk_number": index,
+                        "total_chunks": len(chunks),
+                        "expected_item_count": len(chunk["target_rows"]),
+                    },
+                    "output_schema": {
+                        "items": [
+                            {
+                                "time": 12.34,
+                                "original_html": "lyrics with <ruby>漢字<rt>かんじ</rt></ruby>",
+                                "translation": "plain translation string or empty",
+                            }
+                        ]
+                    },
+                    "input_data": {
+                        "context_rows": ruby_rows_for_model(chunk["context_rows"], include_time=True),
+                        "target_rows": ruby_rows_for_model(chunk["target_rows"], include_time=True),
+                        "pronunciation_reference_lines": candidate_lines,
+                    },
                 },
+                json_object=True,
             )
             raise_if_stopped(job_id)
-            if not isinstance(chunk_result, list):
-                raise ValueError(f"Chunk {index} response must be a JSON array")
+            chunk_result = unwrap_items_result(chunk_result, f"Chunk {index}")
             if len(chunk_result) != len(chunk["target_rows"]):
                 report(f"数量提示：第 {index}/{len(chunks)} 段目标 {len(chunk['target_rows'])} 个，模型返回 {len(chunk_result)} 条；已继续")
             converted.extend(chunk_result)
@@ -544,6 +1251,217 @@ def perform_lyrics_conversion(payload, report=lambda _message: None, job_id=None
         json.dump(converted, f, indent=2, ensure_ascii=False)
     report("JSON 已保存并加入歌库")
     return {"ok": True, "song_name": song_name, "lyrics": converted, "mode": mode}
+
+
+def perform_ruby_from_rows(payload, report=lambda _message: None, job_id=None):
+    song_name = sanitize_filename(str(payload.get("song_name", "")).strip())
+    concurrency = int(payload.get("concurrency") or 4)
+    concurrency = max(1, min(concurrency, 8))
+    max_attempts = int(payload.get("max_attempts") or 4)
+    max_attempts = max(1, min(max_attempts, 6))
+    if not song_name:
+        raise ValueError("Song name is required")
+
+    path = workspace_path(song_name)
+    workspace = read_json_path(path)
+    if not workspace:
+        raise ValueError("Lyrics workspace not found")
+
+    rows = workspace.get("line_rows", [])
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Workspace has no aligned lyric rows")
+
+    settings = load_settings()
+    if not settings.get("api_key"):
+        raise ValueError("API key is not configured")
+
+    normalized_rows = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        normalized_rows.append(
+            {
+                "index": int(row.get("index", index)),
+                "time": row.get("time", 0),
+                "original": str(row.get("original", "") or "").strip(),
+                "translation": str(row.get("translation", "") or "").strip(),
+                "roman": str(row.get("roman", "") or "").strip(),
+            }
+        )
+    if not normalized_rows:
+        raise ValueError("Workspace has no usable lyric rows")
+
+    client_args = {"api_key": settings["api_key"], "base_url": settings.get("base_url") or None}
+    model = settings.get("model") or "deepseek-v4-pro"
+    chunks = chunk_rows(normalized_rows, size=4, context=2)
+    generated_by_index = {}
+    chunk_errors = []
+
+    workspace["status"] = "generating"
+    workspace["errors"] = []
+    workspace["generated_lyrics"] = []
+    workspace["updated_at"] = now_iso()
+    write_json_path(path, workspace)
+
+    report(f"已读取 {len(normalized_rows)} 行工作源歌词")
+    report(f"开始逐段生成 ruby JSON：共 {len(chunks)} 段，并发 {concurrency}")
+    update_job(job_id, progress=1)
+
+    system_prompt = RUBY_GENERATION_SYSTEM_PROMPT
+
+    def generate_chunk(chunk_number, chunk):
+        raise_if_stopped(job_id)
+        report(f"正在生成第 {chunk_number}/{len(chunks)} 段")
+        client = OpenAI(**client_args)
+        target_rows_for_model = [
+            {
+                "row_number": position,
+                "original": row["original"],
+                "translation": row["translation"],
+                "roman_or_pronunciation": row["roman"],
+            }
+            for position, row in enumerate(chunk["target_rows"], start=1)
+        ]
+        target_indexes = [int(row["index"]) for row in chunk["target_rows"]]
+        context_before_rows = [
+            row
+            for row in chunk["context_rows"]
+            if int(row.get("index", -1)) < target_indexes[0]
+        ]
+        context_after_rows = [
+            row
+            for row in chunk["context_rows"]
+            if int(row.get("index", -1)) > target_indexes[-1]
+        ]
+        payload_data = {
+            "task": "Generate ruby annotated JSON for aligned lyric rows.",
+            "metadata": {
+                "song_name": workspace.get("song_name") or song_name,
+                "artist": workspace.get("artist", ""),
+                "chunk_number": chunk_number,
+                "total_chunks": len(chunks),
+                "expected_item_count": len(chunk["target_rows"]),
+            },
+            "output_schema": {
+                "items": [
+                    {
+                        "row_number": 1,
+                        "original_html": "lyrics with <ruby>漢字<rt>かんじ</rt></ruby>",
+                        "translation": "plain translation string or empty",
+                    }
+                ]
+            },
+            "input_data": {
+                "context_rows_before": ruby_rows_for_model(context_before_rows),
+                "target_rows": target_rows_for_model,
+                "context_rows_after": ruby_rows_for_model(context_after_rows),
+            },
+        }
+        last_error = None
+        last_result = None
+        for attempt in range(1, max_attempts + 1):
+            raise_if_stopped(job_id)
+            request_payload = payload_data
+            if attempt > 1:
+                report(f"第 {chunk_number}/{len(chunks)} 段回修 {attempt - 1}/{max_attempts - 1}")
+                request_payload = {
+                    "task": "Repair invalid JSON from previous failed generation.",
+                    "validation_error": str(last_error),
+                    "instruction": "The previous output failed validation. Regenerate the ENTIRE chunk for target_rows. Ensure strict adherence to text preservation and ruby tag rules. Discard previous formatting errors.",
+                    "previous_output": last_result,
+                    "metadata": payload_data["metadata"],
+                    "output_schema": payload_data["output_schema"],
+                    "input_data": {
+                        "target_rows": target_rows_for_model,
+                    },
+                }
+            try:
+                result = chat_json(client, model, system_prompt, request_payload, max_tokens=6000, json_object=True)
+                raise_if_stopped(job_id)
+                last_result = result
+                return normalize_workspace_generated_chunk(result, chunk["target_rows"], report)
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                report(f"第 {chunk_number}/{len(chunks)} 段第 {attempt}/{max_attempts} 次失败：{exc}")
+                if attempt < max_attempts:
+                    time.sleep(min(2 * attempt, 6))
+        raise ValueError(f"第 {chunk_number}/{len(chunks)} 段连续 {max_attempts} 次失败：{last_error}")
+
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = {
+            executor.submit(generate_chunk, chunk_number, chunk): (chunk_number, chunk)
+            for chunk_number, chunk in enumerate(chunks, start=1)
+        }
+        completed = 0
+        for future in as_completed(futures):
+            chunk_number, chunk = futures[future]
+            raise_if_stopped(job_id)
+            try:
+                chunk_result = future.result()
+                for offset, row in enumerate(chunk["target_rows"]):
+                    generated_by_index[int(row["index"])] = chunk_result[offset]
+                report(f"第 {chunk_number}/{len(chunks)} 段完成")
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                message = f"第 {chunk_number}/{len(chunks)} 段失败：{exc}"
+                report(message)
+                chunk_errors.append({"chunk": chunk_number, "error": str(exc)})
+            completed += 1
+            progress = 1 + round(completed / max(len(chunks), 1) * 94)
+            update_job(job_id, progress=progress, message=f"已完成 {completed}/{len(chunks)} 段")
+
+    if chunk_errors:
+        workspace["status"] = "generation_failed"
+        workspace["errors"] = chunk_errors
+        workspace["updated_at"] = now_iso()
+        write_json_path(path, workspace)
+        report(f"生成失败：{len(chunk_errors)} 个分段重试后仍失败，未写入新的 generated_lyrics")
+        raise ValueError(f"{len(chunk_errors)} 个分段生成失败，已停止写入 generated_lyrics")
+
+    report("正在合并结果")
+    missing_indexes = [int(row["index"]) for row in normalized_rows if int(row["index"]) not in generated_by_index]
+    if missing_indexes:
+        workspace["status"] = "validation_failed"
+        workspace["errors"] = [{"error": f"缺少 index：{missing_indexes[:20]}"}]
+        workspace["updated_at"] = now_iso()
+        write_json_path(path, workspace)
+        report(f"校验失败：缺少 index {missing_indexes[:20]}，未写入新的 generated_lyrics")
+        raise ValueError("生成结果缺少分段输出，已停止写入 generated_lyrics")
+
+    generated = [generated_by_index[int(row["index"])] for row in normalized_rows]
+    generated = normalize_converted_lyrics(generated)
+    validation_errors = validate_generated_workspace_lyrics(generated, normalized_rows)
+    if validation_errors:
+        workspace["status"] = "validation_failed"
+        workspace["errors"] = [{"error": message} for message in validation_errors[:20]]
+        workspace["updated_at"] = now_iso()
+        write_json_path(path, workspace)
+        for message in validation_errors[:8]:
+            report(f"校验失败：{message}")
+        if len(validation_errors) > 8:
+            report(f"校验失败：另有 {len(validation_errors) - 8} 条错误")
+        raise ValueError(f"生成结果校验失败：{validation_errors[0]}")
+
+    workspace["line_rows"] = normalized_rows
+    workspace["generated_lyrics"] = generated
+    workspace["status"] = "generated"
+    workspace["errors"] = []
+    workspace["updated_at"] = now_iso()
+    write_json_path(path, workspace)
+    report("已写入 generated_lyrics")
+    report(f"生成结果已写入工作源，共 {len(generated)} 行。发布前不会覆盖正式歌词")
+    update_job(job_id, progress=100)
+
+    return {
+        "ok": True,
+        "song_name": song_name,
+        "mode": "workspace",
+        "lyrics": generated,
+        "errors": [],
+    }
 
 
 def shifted_audio_path(audio_path, key_shift):
@@ -706,13 +1624,180 @@ def api_upload_lyrics():
     return jsonify({"ok": True, "saved": saved})
 
 
+@app.post("/api/lyrics-search")
+def api_lyrics_search():
+    payload = request.get_json(force=True)
+    song_name = str(payload.get("song_name", "")).strip()
+    artist = str(payload.get("artist", "")).strip()
+    album = str(payload.get("album", "")).strip()
+    duration = payload.get("duration")
+    provider = str(payload.get("provider", "aggregate")).strip() or "aggregate"
+    if not song_name:
+        return jsonify({"error": "Song name is required"}), 400
+
+    providers = list(SEARCH_PROVIDERS) if provider == "aggregate" else [provider]
+    results = []
+    errors = {}
+    def search_one(provider_name):
+        searcher = SEARCH_PROVIDERS.get(provider_name)
+        if not searcher:
+            return provider_name, [], "Unknown provider"
+        try:
+            return provider_name, searcher(song_name, artist, album), None
+        except Exception as exc:
+            return provider_name, [], str(exc)
+
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(providers)))) as executor:
+        futures = [executor.submit(search_one, provider_name) for provider_name in providers]
+        for future in as_completed(futures):
+            provider_name, provider_results, error = future.result()
+            if error:
+                errors[provider_name] = error
+                continue
+            for source_order, item in enumerate(provider_results):
+                score = rank_search_result(item, song_name, artist, album, duration, source_order)
+                item["score"] = score
+                item["match_hint"] = item.get("match_hint") or f"{item.get('provider')} · {item.get('artist') or 'unknown'}"
+                item["_provider_priority"] = PROVIDER_PRIORITY.get(item.get("provider"), 99)
+                item["_source_order"] = source_order
+                results.append(item)
+
+    seen = set()
+    deduped = []
+    for item in sorted(
+        results,
+        key=lambda row: (
+            -(row.get("score") or 0),
+            row.get("_source_order", 999),
+            row.get("_provider_priority", 99),
+            str(row.get("title", "")),
+        ),
+    ):
+        key = (item.get("provider"), item.get("source_song_id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        item.pop("_provider_priority", None)
+        item.pop("_source_order", None)
+        deduped.append(item)
+    return jsonify({"results": deduped[:30], "errors": errors})
+
+
+@app.post("/api/lyrics-preview")
+def api_lyrics_preview():
+    payload = request.get_json(force=True)
+    result = payload.get("result") or payload
+    if not isinstance(result, dict):
+        return jsonify({"error": "Search result is required"}), 400
+    provider = result.get("provider")
+    previewer = PREVIEW_PROVIDERS.get(provider)
+    if not previewer:
+        return jsonify({"error": "Unknown provider"}), 400
+    try:
+        preview = previewer(result)
+        return jsonify(serialize_preview(result, preview))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+
+
+@app.get("/api/lyrics-workspace/<path:name>")
+def api_get_lyrics_workspace(name):
+    path = workspace_path(name)
+    workspace = read_json_path(path)
+    if not workspace:
+        return jsonify({"error": "Lyrics workspace not found"}), 404
+    return jsonify(workspace)
+
+
+@app.post("/api/lyrics-workspace/<path:name>")
+def api_save_lyrics_workspace(name):
+    payload = request.get_json(force=True)
+    song_name = sanitize_filename(str(payload.get("song_name") or name).strip())
+    if not song_name:
+        return jsonify({"error": "Song name is required"}), 400
+
+    existing = read_json_path(workspace_path(song_name), {})
+    original_lrc = str(payload.get("original_lrc", existing.get("original_lrc", "")) or "")
+    translation_lrc = str(payload.get("translation_lrc", existing.get("translation_lrc", "")) or "")
+    roman_lrc = str(payload.get("roman_lrc", existing.get("roman_lrc", "")) or "")
+    workspace = {
+        "song_name": song_name,
+        "artist": str(payload.get("artist", existing.get("artist", "")) or ""),
+        "source": payload.get("source", existing.get("source", {})) or {},
+        "original_lrc": original_lrc,
+        "translation_lrc": translation_lrc,
+        "roman_lrc": roman_lrc,
+        "line_rows": align_lrc_sources(original_lrc, translation_lrc, roman_lrc),
+        "generated_lyrics": payload.get("generated_lyrics") if isinstance(payload.get("generated_lyrics"), list) else [],
+        "status": "draft",
+        "updated_at": now_iso(),
+    }
+    write_json_path(workspace_path(song_name), workspace)
+    return jsonify(workspace)
+
+
+@app.post("/api/lyrics-workspace/<path:name>/use-preview")
+def api_use_lyrics_preview(name):
+    payload = request.get_json(force=True)
+    result = payload.get("result")
+    preview = payload.get("preview")
+    if not isinstance(result, dict) or not isinstance(preview, dict):
+        return jsonify({"error": "Preview result is required"}), 400
+    song_name = sanitize_filename(str(payload.get("song_name") or name).strip())
+    artist = str(payload.get("artist") or result.get("artist") or "").strip()
+    workspace = workspace_from_preview(song_name, artist, result, preview)
+    write_json_path(workspace_path(song_name), workspace)
+    return jsonify(workspace)
+
+
+@app.post("/api/lyrics-align/<path:name>")
+def api_realign_lyrics_workspace(name):
+    workspace = read_json_path(workspace_path(name))
+    if not workspace:
+        return jsonify({"error": "Lyrics workspace not found"}), 404
+    workspace["line_rows"] = align_lrc_sources(
+        workspace.get("original_lrc", ""),
+        workspace.get("translation_lrc", ""),
+        workspace.get("roman_lrc", ""),
+    )
+    workspace["generated_lyrics"] = []
+    workspace["status"] = "draft"
+    workspace["updated_at"] = now_iso()
+    write_json_path(workspace_path(name), workspace)
+    return jsonify(workspace)
+
+
+@app.post("/api/lyrics-workspace/<path:name>/publish")
+def api_publish_lyrics_workspace(name):
+    workspace = read_json_path(workspace_path(name))
+    if not workspace:
+        return jsonify({"error": "Lyrics workspace not found"}), 404
+    lyrics = workspace.get("generated_lyrics", [])
+    if not isinstance(lyrics, list) or not lyrics:
+        return jsonify({"error": "No generated lyrics to publish"}), 400
+    lyrics = normalize_converted_lyrics(lyrics)
+    validation_errors = validate_generated_workspace_lyrics(lyrics, workspace.get("line_rows", []))
+    if validation_errors:
+        workspace["status"] = "validation_failed"
+        workspace["errors"] = [{"error": message} for message in validation_errors[:20]]
+        workspace["updated_at"] = now_iso()
+        write_json_path(workspace_path(name), workspace)
+        return jsonify({"error": f"Generated lyrics failed validation: {validation_errors[0]}"}), 400
+    target = SONG_DIR / f"{sanitize_filename(name)}.json"
+    write_json_path(target, lyrics)
+    workspace["status"] = "published"
+    workspace["updated_at"] = now_iso()
+    write_json_path(workspace_path(name), workspace)
+    return jsonify({"ok": True, "song_name": name, "published_count": len(lyrics), "lyrics_count": len(lyrics)})
+
+
 @app.get("/api/settings")
 def api_get_settings():
     settings = load_settings()
     return jsonify(
         {
             "base_url": settings.get("base_url", ""),
-            "model": settings.get("model", "gpt-4.1-mini"),
+            "model": settings.get("model", "deepseek-v4-pro"),
             "has_api_key": bool(settings.get("api_key")),
         }
     )
@@ -723,7 +1808,7 @@ def api_save_settings():
     payload = request.get_json(force=True)
     current = load_settings()
     current["base_url"] = str(payload.get("base_url", current.get("base_url", ""))).strip()
-    current["model"] = str(payload.get("model", current.get("model", "gpt-4.1-mini"))).strip()
+    current["model"] = str(payload.get("model", current.get("model", "deepseek-v4-pro"))).strip()
     if "api_key" in payload and payload["api_key"]:
         current["api_key"] = str(payload["api_key"]).strip()
     save_settings(current)
@@ -739,7 +1824,7 @@ def api_test_settings():
     try:
         client = OpenAI(api_key=settings["api_key"], base_url=settings.get("base_url") or None)
         completion = client.chat.completions.create(
-            model=settings.get("model") or "gpt-4.1-mini",
+            model=settings.get("model") or "deepseek-v4-pro",
             messages=[
                 {"role": "system", "content": "Reply with OK only."},
                 {"role": "user", "content": "Connection test. Reply OK."},
@@ -751,6 +1836,57 @@ def api_test_settings():
         return jsonify({"ok": True, "message": content or "OK"})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 502
+
+
+def run_convert_job_v2(job_id):
+    started_at = datetime.now().astimezone()
+    update_job(job_id, status="running", message="任务已开始", started_at=started_at.isoformat(timespec="seconds"))
+    try:
+        with jobs_lock:
+            job = load_jobs().get(job_id, {})
+            payload = job.get("payload", {})
+            job_type = job.get("type", "convert_lyrics")
+
+        if job_type == "generate_ruby_from_rows":
+            result = perform_ruby_from_rows(payload, report=lambda message: append_job_step(job_id, message), job_id=job_id)
+        else:
+            result = perform_lyrics_conversion(payload, report=lambda message: append_job_step(job_id, message), job_id=job_id)
+
+        duration_seconds = round((datetime.now().astimezone() - started_at).total_seconds(), 1)
+        update_job(
+            job_id,
+            status="done",
+            progress=100,
+            message=f"生成完成，用时 {duration_seconds} 秒",
+            result={"song_name": result["song_name"], "mode": result.get("mode", "workspace")},
+            duration_seconds=duration_seconds,
+            finished_at=now_iso(),
+            stop_requested=False,
+        )
+    except RuntimeError as exc:
+        duration_seconds = round((datetime.now().astimezone() - started_at).total_seconds(), 1)
+        if str(exc) != "TASK_STOPPED":
+            append_job_step(job_id, f"任务停止：{exc}")
+        update_job(
+            job_id,
+            status="stopped",
+            message="任务已停止",
+            duration_seconds=duration_seconds,
+            finished_at=now_iso(),
+            stop_requested=False,
+        )
+    except Exception as exc:
+        duration_seconds = round((datetime.now().astimezone() - started_at).total_seconds(), 1)
+        append_job_step(job_id, f"生成失败：{exc}")
+        update_job(
+            job_id,
+            status="failed",
+            message=f"生成失败：{exc}",
+            error=str(exc),
+            duration_seconds=duration_seconds,
+            finished_at=now_iso(),
+            stop_requested=False,
+        )
 
 
 def run_convert_job(job_id):
@@ -810,9 +1946,13 @@ def api_convert_jobs():
 def api_create_convert_job():
     payload = request.get_json(force=True)
     song_name = sanitize_filename(str(payload.get("song_name", "")).strip())
+    job_type = str(payload.get("type") or payload.get("job_type") or "convert_lyrics").strip()
     if not song_name:
         return jsonify({"error": "Song name is required"}), 400
-    if not str(payload.get("lrc_text", "")).strip() or not str(payload.get("annotated_text", "")).strip():
+    if job_type == "generate_ruby_from_rows":
+        if not workspace_path(song_name).exists():
+            return jsonify({"error": "Lyrics workspace not found"}), 400
+    elif not str(payload.get("lrc_text", "")).strip() or not str(payload.get("annotated_text", "")).strip():
         return jsonify({"error": "LRC and annotated text are required"}), 400
     if not load_settings().get("api_key"):
         return jsonify({"error": "API key is not configured"}), 400
@@ -820,9 +1960,10 @@ def api_create_convert_job():
     job_id = uuid.uuid4().hex
     job = {
         "id": job_id,
-        "type": "convert_lyrics",
+        "type": job_type,
         "song_name": song_name,
-        "mode": str(payload.get("conversion_mode", "stable")).strip() or "stable",
+        "mode": "workspace" if job_type == "generate_ruby_from_rows" else str(payload.get("conversion_mode", "stable")).strip() or "stable",
+        "progress": 0,
         "status": "queued",
         "message": "任务已加入后台队列",
         "steps": [{"time": now_iso(), "message": "任务已加入后台队列"}],
@@ -830,12 +1971,15 @@ def api_create_convert_job():
         "updated_at": now_iso(),
         "payload": payload,
     }
+    queued_message = "工作页任务已加入后台队列" if job_type == "generate_ruby_from_rows" else "任务已加入后台队列"
+    job["message"] = queued_message
+    job["steps"] = [{"time": now_iso(), "message": queued_message}]
     with jobs_lock:
         jobs = load_jobs()
         jobs[job_id] = job
         save_jobs(jobs)
 
-    thread = threading.Thread(target=run_convert_job, args=(job_id,), daemon=True)
+    thread = threading.Thread(target=run_convert_job_v2, args=(job_id,), daemon=True)
     thread.start()
     return jsonify(public_job(job)), 202
 
@@ -901,39 +2045,37 @@ def api_convert_lyrics():
     if not rows:
         return jsonify({"error": "No timestamps found in LRC"}), 400
 
-    client = OpenAI(api_key=settings["api_key"], base_url=settings.get("base_url") or None)
-    prompt = {
-        "task": "Create karaoke lyric JSON. Return JSON only.",
-        "schema": [{"time": 12.34, "original_html": "text with <ruby>字<rt>注音</rt></ruby>", "translation": ""}],
-        "lrc_rows": rows,
-        "annotated_text": annotated_text,
-        "rules": [
-            "Keep the same number and order of rows as lrc_rows.",
-            "Use each lrc_rows time value exactly.",
-            "Put ruby/furigana/jyutping markup in original_html.",
-            "Put translations in translation only if the LRC line contains translation text; otherwise use an empty string.",
-            "Do not wrap the answer in markdown.",
-        ],
-    }
-    completion = client.chat.completions.create(
-        model=settings.get("model") or "gpt-4.1-mini",
-        messages=[
-            {"role": "system", "content": "You are a precise lyrics conversion engine. Output valid JSON only."},
-            {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
-        ],
-        temperature=0,
-    )
-    content = completion.choices[0].message.content or ""
-    content = content.strip()
-    if content.startswith("```"):
-        content = re.sub(r"^```(?:json)?\s*", "", content)
-        content = re.sub(r"\s*```$", "", content)
     try:
-        converted = json.loads(content)
-    except json.JSONDecodeError as exc:
-        return jsonify({"error": f"Model returned invalid JSON: {exc}", "raw": content}), 502
-    if not isinstance(converted, list):
-        return jsonify({"error": "Model response must be a JSON array", "raw": content}), 502
+        client = OpenAI(api_key=settings["api_key"], base_url=settings.get("base_url") or None)
+        converted = chat_json(
+            client,
+            settings.get("model") or "deepseek-v4-pro",
+            RUBY_GENERATION_SYSTEM_PROMPT,
+            {
+                "task": "Generate ruby annotated timed lyric JSON.",
+                "metadata": {
+                    "mode": "legacy_direct",
+                    "expected_item_count": len(rows),
+                },
+                "output_schema": {
+                    "items": [
+                        {
+                            "time": 12.34,
+                            "original_html": "lyrics with <ruby>漢字<rt>かんじ</rt></ruby>",
+                            "translation": "plain translation string or empty",
+                        }
+                    ]
+                },
+                "input_data": {
+                    "target_rows": ruby_rows_for_model(rows, include_time=True),
+                    "pronunciation_reference_text": annotated_text,
+                },
+            },
+            json_object=True,
+        )
+        converted = unwrap_items_result(converted, "Model")
+    except Exception as exc:
+        return jsonify({"error": f"Model conversion failed: {exc}"}), 502
 
     target = SONG_DIR / f"{song_name}.json"
     with target.open("w", encoding="utf-8") as f:
@@ -963,25 +2105,20 @@ def api_convert_lyrics_chunked():
     target_rows = group_lrc_rows(rows)
 
     client = OpenAI(api_key=settings["api_key"], base_url=settings.get("base_url") or None)
-    model = settings.get("model") or "gpt-4.1-mini"
+    model = settings.get("model") or "deepseek-v4-pro"
     steps = [f"已读取 {len(rows)} 行带时间轴歌词，合并为 {len(target_rows)} 个时间点"]
 
     try:
         cleaned = chat_json(
             client,
             model,
-            "You clean annotated karaoke source text. Output valid JSON only.",
+            CLEAN_SOURCE_SYSTEM_PROMPT,
             {
-                "task": "Clean source text before lyric alignment.",
-                "input_text": annotated_text,
+                "task": "Extract and clean lyric lines.",
                 "output_schema": {"lines": ["lyric line with ruby/furigana/jyutping if present"]},
-                "rules": [
-                    "Remove unrelated headers, song title lines, artist names, credits, blank lines, romaji-only lines, and commentary.",
-                    "Keep real lyric lines, translations, and pronunciation annotations.",
-                    "Do not invent lyrics.",
-                    "Return JSON only with a lines array.",
-                ],
+                "input_text": annotated_text,
             },
+            json_object=True,
         )
     except json.JSONDecodeError as exc:
         return jsonify({"error": f"Clean step returned invalid JSON: {exc}"}), 502
@@ -1000,48 +2137,41 @@ def api_convert_lyrics_chunked():
             converted = chat_json(
                 client,
                 model,
-                "You align a full timed lyric file with cleaned annotated source text. Output valid JSON only.",
+                RUBY_GENERATION_SYSTEM_PROMPT,
                 {
-                    "task": "Create full karaoke lyric JSON with ruby annotations.",
-                    "mode": "stable_full_song_after_cleaning",
-                    "schema": [
-                        {
-                            "time": 12.34,
-                            "original_html": "text with <ruby>字<rt>reading</rt></ruby>",
-                            "translation": "",
-                        }
-                    ],
-                    "lrc_rows": target_rows,
-                    "cleaned_annotated_lines": [
-                        {"index": line_index, "text": line}
-                        for line_index, line in enumerate(cleaned_lines)
-                    ],
-                    "rules": [
-                        "Return exactly one JSON array item for every lrc_rows item; lrc_rows may already merge original and translated LRC lines with the same timestamp.",
-                        "Keep lrc_rows order and use each lrc_rows time value exactly.",
-                        "The cleaned source line count may not match the LRC row count.",
-                        "Use the cleaned source as reference for ruby/furigana/jyutping, not as a row-by-row contract.",
-                        "original_html MUST use <ruby>字<rt>reading</rt></ruby> for EVERY character whose pronunciation appears in the cleaned source. Ruby annotations are MANDATORY — never skip or omit them.",
-                        "If the cleaned source contains furigana, jyutping, or any reading for a character, that reading MUST appear in the output using ruby tags. Do not discard readings.",
-                        "original_html is only the sung lyric in the original language — no translations, no explanations.",
-                        "Never put Chinese translation, explanation, or meaning text in original_html.",
-                        "Do not use <br> to append translation inside original_html.",
-                        "Do not output song title, artist, lyricist, composer, arranger, or credit lines.",
-                        "If a translation is available for a lyric row, put it in that same row's translation field.",
-                        "Never create a row with empty original_html just to hold translation.",
-                        "translation must contain only the Chinese translation as plain text without HTML; use an empty string if unclear.",
-                        "Do not include romaji-only text unless it is the actual lyric.",
-                        "Do not wrap the answer in markdown.",
-                    ],
+                    "task": "Generate ruby annotated timed lyric JSON.",
+                    "metadata": {
+                        "mode": "stable_full_song_after_cleaning",
+                        "expected_item_count": len(target_rows),
+                    },
+                    "output_schema": {
+                        "items": [
+                            {
+                                "time": 12.34,
+                                "original_html": "lyrics with <ruby>漢字<rt>かんじ</rt></ruby>",
+                                "translation": "plain translation string or empty",
+                            }
+                        ]
+                    },
+                    "input_data": {
+                        "target_rows": ruby_rows_for_model(target_rows, include_time=True),
+                        "pronunciation_reference_lines": [
+                            {"index": line_index, "text": line}
+                            for line_index, line in enumerate(cleaned_lines)
+                        ],
+                    },
                 },
+                json_object=True,
             )
         except json.JSONDecodeError as exc:
             return jsonify({"error": f"Stable generation returned invalid JSON: {exc}"}), 502
         except Exception as exc:
             return jsonify({"error": f"Stable generation failed: {exc}"}), 502
 
-        if not isinstance(converted, list):
-            return jsonify({"error": "Stable generation response must be a JSON array"}), 502
+        try:
+            converted = unwrap_items_result(converted, "Stable generation")
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 502
         if len(converted) != len(target_rows):
             steps.append(f"数量提示：目标时间点 {len(target_rows)} 个，模型返回 {len(converted)} 条；已继续保存，请人工检查断句")
         converted = normalize_converted_lyrics(converted)
@@ -1060,48 +2190,41 @@ def api_convert_lyrics_chunked():
             chunk_result = chat_json(
                 client,
                 model,
-                "You align timed lyrics with annotated source text. Output valid JSON only.",
+                RUBY_GENERATION_SYSTEM_PROMPT,
                 {
-                    "task": "Create one chunk of karaoke lyric JSON with ruby annotations.",
-                    "chunk_index": index,
-                    "total_chunks": len(chunks),
-                    "schema": [
-                        {
-                            "time": 12.34,
-                            "original_html": "text with <ruby>字<rt>reading</rt></ruby>",
-                            "translation": "",
-                        }
-                    ],
-                    "target_rows": chunk["target_rows"],
-                    "context_rows": chunk["context_rows"],
-                    "candidate_annotated_lines": candidate_lines,
-                    "rules": [
-                        "Return exactly one JSON array item for every target_rows item; target_rows may already merge original and translated LRC lines with the same timestamp.",
-                        "Keep target_rows order and use each target time value exactly.",
-                        "Use context_rows only for continuity; do not output context-only rows.",
-                        "Prefer candidate_annotated_lines, using their indexes only as source references.",
-                        "The source line count may not match the LRC row count because it may include translations or removed romaji.",
-                        "original_html MUST use <ruby>字<rt>reading</rt></ruby> for EVERY character whose pronunciation appears in the cleaned source. Ruby annotations are MANDATORY — never skip or omit them.",
-                        "If the cleaned source contains furigana, jyutping, or any reading for a character, that reading MUST appear in the output using ruby tags. Do not discard readings.",
-                        "original_html is only the sung lyric in the original language — no translations, no explanations.",
-                        "Never put Chinese translation, explanation, or meaning text in original_html.",
-                        "Do not use <br> to append translation inside original_html.",
-                        "Do not output song title, artist, lyricist, composer, arranger, or credit lines.",
-                        "If a translation is available for a lyric row, put it in that same row's translation field.",
-                        "Never create a row with empty original_html just to hold translation.",
-                        "translation must contain only the Chinese translation as plain text without HTML; use an empty string if unclear.",
-                        "Do not include romaji-only text unless it is the actual lyric.",
-                        "Do not wrap the answer in markdown.",
-                    ],
+                    "task": "Generate ruby annotated timed lyric JSON.",
+                    "metadata": {
+                        "mode": "chunked",
+                        "chunk_number": index,
+                        "total_chunks": len(chunks),
+                        "expected_item_count": len(chunk["target_rows"]),
+                    },
+                    "output_schema": {
+                        "items": [
+                            {
+                                "time": 12.34,
+                                "original_html": "lyrics with <ruby>漢字<rt>かんじ</rt></ruby>",
+                                "translation": "plain translation string or empty",
+                            }
+                        ]
+                    },
+                    "input_data": {
+                        "context_rows": ruby_rows_for_model(chunk["context_rows"], include_time=True),
+                        "target_rows": ruby_rows_for_model(chunk["target_rows"], include_time=True),
+                        "pronunciation_reference_lines": candidate_lines,
+                    },
                 },
+                json_object=True,
             )
         except json.JSONDecodeError as exc:
             return jsonify({"error": f"Chunk {index} returned invalid JSON: {exc}"}), 502
         except Exception as exc:
             return jsonify({"error": f"Chunk {index} failed: {exc}"}), 502
 
-        if not isinstance(chunk_result, list):
-            return jsonify({"error": f"Chunk {index} response must be a JSON array"}), 502
+        try:
+            chunk_result = unwrap_items_result(chunk_result, f"Chunk {index}")
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 502
         if len(chunk_result) != len(chunk["target_rows"]):
             steps.append(f"数量提示：第 {index}/{len(chunks)} 段目标 {len(chunk['target_rows'])} 个，模型返回 {len(chunk_result)} 条；已继续")
         converted.extend(chunk_result)
