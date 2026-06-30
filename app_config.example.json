@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "default_base_url": "http://192.168.68.200:8502",
+  "servers": [
+    {
+      "name": "飞牛局域网",
+      "base_url": "http://192.168.68.200:8502"
+    }
+  ]
+}

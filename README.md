@@ -117,7 +117,39 @@ songs/<歌曲名>.json
 
 ## APK / 手机使用
 
-当前版本是移动端友好的 Web App。手机浏览器访问服务地址即可使用，也可以后续用 WebView/TWA 包成 APK。
+当前版本包含两个手机入口：
+
+- 完整 Web App：`http://<服务器局域网 IP>:8502/`
+- 轻量 App 端：`http://<服务器局域网 IP>:8502/app`
+
+轻量 App 端用于手机播放和查看歌库。它支持两种连接方式：
+
+1. 直接填写服务器地址，例如：
+
+```text
+http://192.168.68.200:8502
+```
+
+2. 填写一个云端配置 JSON URL，然后由 App 端从云端读取局域网服务器地址。
+
+云端配置格式参考 `app_config.example.json`：
+
+```json
+{
+  "version": 1,
+  "default_base_url": "http://192.168.68.200:8502",
+  "servers": [
+    {
+      "name": "飞牛局域网",
+      "base_url": "http://192.168.68.200:8502"
+    }
+  ]
+}
+```
+
+这个 JSON 可以放在 Cloudflare Pages、GitHub raw、NAS 静态目录等位置。手机打开 `/app` 后填入这个 JSON 地址，点击同步即可拉取服务器列表。
+
+注意：如果把 App 前端部署在 HTTPS 云端页面上，浏览器通常会阻止它访问 `http://192.168.x.x` 这种局域网 HTTP 地址。推荐方式是手机直接打开局域网地址的 `/app`，再从那里读取 HTTPS 云端配置；如果要包 APK，需要 WebView 允许 cleartext HTTP。
 
 ## Cloudflare Pages
 

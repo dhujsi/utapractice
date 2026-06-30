@@ -19,7 +19,7 @@ from urllib.request import Request, urlopen
 
 import librosa
 import soundfile as sf
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, jsonify, make_response, render_template, request, send_file
 from openai import OpenAI
 
 
@@ -40,6 +40,27 @@ ARCHIVE_DIR.mkdir(exist_ok=True)
 GENERATED_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__, static_folder="web_static", template_folder="templates")
+
+
+def add_api_cors_headers(response):
+    if request.path.startswith("/api/"):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+        response.headers["Access-Control-Max-Age"] = "86400"
+    return response
+
+
+@app.before_request
+def handle_api_preflight():
+    if request.method == "OPTIONS" and request.path.startswith("/api/"):
+        return add_api_cors_headers(make_response("", 204))
+    return None
+
+
+@app.after_request
+def apply_api_cors(response):
+    return add_api_cors_headers(response)
 jobs_lock = threading.Lock()
 
 
@@ -1481,6 +1502,23 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/app")
+def mobile_app():
+    return render_template("mobile_app.html")
+
+
+@app.get("/api/app/health")
+def api_app_health():
+    return jsonify(
+        {
+            "ok": True,
+            "name": "utapractice",
+            "server_time": now_iso(),
+            "songs_count": len(find_available_songs()),
+        }
+    )
+
+
 @app.get("/api/songs")
 def api_songs():
     db = load_db()
@@ -2242,6 +2280,11 @@ def api_convert_lyrics_chunked():
 @app.get("/manifest.webmanifest")
 def manifest():
     return send_file(BASE_DIR / "web_static" / "manifest.webmanifest", mimetype="application/manifest+json")
+
+
+@app.get("/app.webmanifest")
+def app_manifest():
+    return send_file(BASE_DIR / "web_static" / "app.webmanifest", mimetype="application/manifest+json")
 
 
 if __name__ == "__main__":

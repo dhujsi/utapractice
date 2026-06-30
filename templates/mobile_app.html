@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f8fb">
+  <title>练歌房 App</title>
+  <link rel="manifest" href="/app.webmanifest">
+  <link rel="stylesheet" href="/web_static/mobile_app.css">
+</head>
+<body>
+  <main class="app-client">
+    <header class="topbar">
+      <div>
+        <p>练歌房 App</p>
+        <h1>移动端播放器</h1>
+      </div>
+      <button type="button" id="syncCloud">同步</button>
+    </header>
+
+    <section class="server-panel">
+      <label>
+        <span>云端配置 URL</span>
+        <input id="cloudConfigUrl" type="url" placeholder="https://example.com/utapractice-app.json">
+      </label>
+      <label>
+        <span>服务器地址</span>
+        <input id="apiBaseUrl" type="url" placeholder="http://192.168.68.200:8502">
+      </label>
+      <div class="button-row">
+        <button type="button" id="useCurrentHost">当前局域网地址</button>
+        <button type="button" id="connectServer">连接</button>
+      </div>
+      <p class="status" id="connectionStatus">未连接</p>
+      <div class="server-list" id="serverList"></div>
+    </section>
+
+    <section class="library-panel">
+      <div class="section-title">
+        <h2>歌库</h2>
+        <button type="button" id="refreshSongs">刷新</button>
+      </div>
+      <label>
+        <span>选择歌曲</span>
+        <select id="songSelect"></select>
+      </label>
+    </section>
+
+    <section class="now-playing" id="songPanel" hidden>
+      <p class="status" id="songMeta"></p>
+      <h2 id="songTitle"></h2>
+      <audio id="audio" controls preload="metadata"></audio>
+      <div class="lyrics" id="lyrics"></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="/web_static/mobile_app.js"></script>
+</body>
+</html>
