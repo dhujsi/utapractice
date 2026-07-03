@@ -1010,7 +1010,9 @@ els.playButton.addEventListener("click", () => {
   else els.audio.pause();
 });
 els.speedButton.addEventListener("click", () => {
-  const next = els.audio.playbackRate === 1 ? 0.75 : els.audio.playbackRate === 0.75 ? 0.5 : 1;
+  const rates = [1, 0.9, 0.8, 0.5];
+  const currentIndex = rates.findIndex((rate) => Math.abs(els.audio.playbackRate - rate) < 0.01);
+  const next = rates[(currentIndex + 1) % rates.length];
   els.audio.playbackRate = next;
   els.speedButton.textContent = `${next.toFixed(2).replace(".00", "")}x`;
 });
