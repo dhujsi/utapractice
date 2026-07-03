@@ -9,6 +9,9 @@ data/
 # Temporary files
 static/
 generated/
+dist/*.apk
+android/.gradle/
+android/**/build/
 
 # IDE config
 .vscode/
