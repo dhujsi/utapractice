@@ -27,6 +27,13 @@ const els = {
   songAvailability: document.getElementById("songAvailability"),
   songPanel: document.getElementById("songPanel"),
   settingsPanel: document.getElementById("settingsPanel"),
+  apkSyncPanel: document.getElementById("apkSyncPanel"),
+  apkCloudUrl: document.getElementById("apkCloudUrl"),
+  apkServerUrl: document.getElementById("apkServerUrl"),
+  apkLoadCloud: document.getElementById("apkLoadCloud"),
+  apkSyncAll: document.getElementById("apkSyncAll"),
+  apkSyncProgress: document.getElementById("apkSyncProgress"),
+  apkSyncStatus: document.getElementById("apkSyncStatus"),
   keyField: document.getElementById("keyField"),
   keySlider: document.getElementById("keySlider"),
   keyOutput: document.getElementById("keyOutput"),
@@ -140,6 +147,46 @@ function showToast(message) {
     els.toast.hidden = true;
   }, 2200);
 }
+
+function hasAndroidBridge() {
+  return Boolean(window.UtaPracticeAndroid);
+}
+
+function setApkSyncProgress(progress) {
+  if (!els.apkSyncProgress) return;
+  const value = Math.max(0, Math.min(100, Number(progress) || 0));
+  els.apkSyncProgress.style.width = `${value}%`;
+}
+
+function initAndroidBridge() {
+  if (!hasAndroidBridge() || !els.apkSyncPanel) return;
+  els.apkSyncPanel.hidden = false;
+  try {
+    els.apkServerUrl.value = window.UtaPracticeAndroid.getServerUrl?.() || "";
+    els.apkCloudUrl.value = window.UtaPracticeAndroid.getCloudConfigUrl?.() || "";
+  } catch {
+    els.apkSyncStatus.textContent = "APK 桥接状态读取失败";
+  }
+}
+
+window.addEventListener("utapractice-android", async (event) => {
+  const detail = event.detail || {};
+  if (!els.apkSyncStatus) return;
+  els.apkSyncStatus.textContent = detail.message || "";
+  setApkSyncProgress(detail.progress || 0);
+  if (detail.channel === "cloud" && detail.status === "done" && detail.serverUrl) {
+    els.apkServerUrl.value = detail.serverUrl;
+  }
+  if (detail.channel === "cloud" && ["done", "failed"].includes(detail.status)) {
+    els.apkLoadCloud.disabled = false;
+  }
+  if (detail.channel === "sync" && detail.status === "done") {
+    await loadSongs().catch(() => {});
+  }
+  if (detail.channel === "sync" && ["done", "failed"].includes(detail.status)) {
+    els.apkSyncAll.disabled = false;
+  }
+});
 
 function setPage(page) {
   state.page = page;
@@ -921,6 +968,35 @@ els.alignGroup.addEventListener("click", (event) => {
 });
 els.rangeInput.addEventListener("change", () => saveMeta({ range: els.rangeInput.value }, "备注已保存"));
 els.learnedInput.addEventListener("change", () => saveMeta({ learned: els.learnedInput.checked }, "状态已保存"));
+if (els.apkLoadCloud) {
+  els.apkLoadCloud.addEventListener("click", () => {
+    if (!hasAndroidBridge()) return;
+    els.apkLoadCloud.disabled = true;
+    els.apkSyncStatus.textContent = "正在读取云端配置...";
+    setApkSyncProgress(0);
+    try {
+      window.UtaPracticeAndroid.loadCloudConfig(els.apkCloudUrl.value);
+    } catch (error) {
+      els.apkSyncStatus.textContent = `读取失败：${error.message}`;
+      els.apkLoadCloud.disabled = false;
+    }
+  });
+}
+if (els.apkSyncAll) {
+  els.apkSyncAll.addEventListener("click", () => {
+    if (!hasAndroidBridge()) return;
+    els.apkSyncAll.disabled = true;
+    els.apkSyncStatus.textContent = "正在同步到本机...";
+    setApkSyncProgress(0);
+    try {
+      window.UtaPracticeAndroid.setServerUrl(els.apkServerUrl.value);
+      window.UtaPracticeAndroid.syncAll();
+    } catch (error) {
+      els.apkSyncStatus.textContent = `同步失败：${error.message}`;
+      els.apkSyncAll.disabled = false;
+    }
+  });
+}
 els.audio.addEventListener("timeupdate", highlightCurrentLyric);
 els.audio.addEventListener("play", () => {
   els.playButton.textContent = "⏸";
@@ -1037,6 +1113,8 @@ els.publishWorkspace.addEventListener("click", () => publishWorkspace().catch((e
 els.refreshJobs.addEventListener("click", () => loadJobs().catch((error) => showToast(error.message)));
 els.openSidebar.addEventListener("click", () => els.sidebar.classList.add("open"));
 els.closeSidebar.addEventListener("click", () => els.sidebar.classList.remove("open"));
+
+initAndroidBridge();
 
 Promise.all([loadSettings(), loadSongs(), loadJobs()])
   .then(([, , jobs]) => scheduleJobPollingIfNeeded(jobs))

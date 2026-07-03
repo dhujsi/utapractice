@@ -13,4 +13,23 @@ android {
         versionCode 1
         versionName "0.1.0"
     }
+
+    sourceSets {
+        main {
+            assets.srcDirs += "$buildDir/generated/webapp-assets"
+        }
+    }
 }
+
+tasks.register("syncWebAppAssets", Copy) {
+    into "$buildDir/generated/webapp-assets/webapp"
+    from("../../templates") {
+        include "index.html"
+    }
+    from("../../web_static") {
+        into "web_static"
+        include "app.css", "app.js", "manifest.webmanifest"
+    }
+}
+
+preBuild.dependsOn("syncWebAppAssets")

@@ -78,6 +78,26 @@
             <span>已学会</span>
           </label>
         </section>
+
+        <section class="panel song-panel apk-only-panel" id="apkSyncPanel" hidden>
+          <h2>APK 离线同步</h2>
+          <label class="field">
+            <span>云端配置 URL</span>
+            <input id="apkCloudUrl" type="url" placeholder="https://example.com/utapractice-app.json">
+          </label>
+          <label class="field">
+            <span>飞牛后端地址</span>
+            <input id="apkServerUrl" type="url" placeholder="http://192.168.68.200:8502">
+          </label>
+          <div class="button-row">
+            <button type="button" id="apkLoadCloud">读取云端</button>
+            <button type="button" id="apkSyncAll">同步全部</button>
+          </div>
+          <div class="job-progress apk-sync-progress">
+            <span id="apkSyncProgress"></span>
+          </div>
+          <p class="status-line" id="apkSyncStatus">已同步的歌曲可离线播放。</p>
+        </section>
       </div>
 
       <div class="side-page" data-page-panel="library">
