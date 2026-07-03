@@ -122,9 +122,9 @@ public class MainActivity extends Activity {
         }
 
         try {
-            WebResourceResponse cachedAudio = cachedAudioResponse(uri);
-            if (cachedAudio != null) {
-                return cachedAudio;
+            WebResourceResponse cached = cachedFirstResponse(uri);
+            if (cached != null) {
+                return cached;
             }
 
             byte[] remote = httpGetBytes(serverUrl() + pathAndQuery);
@@ -133,6 +133,29 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {
             return cachedApiResponse(uri);
         }
+    }
+
+    private WebResourceResponse cachedFirstResponse(Uri uri) throws IOException {
+        String path = uri.getPath();
+        if ("/api/songs".equals(path) && songsListFile().exists()) {
+            return fileResponse("application/json", songsListFile());
+        }
+
+        String audioPrefix = "/api/songs/";
+        if (path != null && path.startsWith(audioPrefix) && path.endsWith("/audio")) {
+            String name = Uri.decode(path.substring(audioPrefix.length(), path.length() - "/audio".length()));
+            File audio = audioFile(name);
+            if (audio.exists()) return fileResponse(audioMimeFile(name), audio);
+            return null;
+        }
+
+        if (path != null && path.startsWith(audioPrefix)) {
+            String name = Uri.decode(path.substring(audioPrefix.length()));
+            File song = songJsonFile(name);
+            if (song.exists()) return fileResponse("application/json", song);
+        }
+
+        return null;
     }
 
     private void cacheGetResponse(Uri uri, byte[] bytes) throws Exception {
@@ -303,8 +326,8 @@ public class MainActivity extends Activity {
 
     private HttpResult httpGet(String urlText) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(urlText).openConnection();
-        connection.setConnectTimeout(5000);
-        connection.setReadTimeout(20000);
+        connection.setConnectTimeout(1500);
+        connection.setReadTimeout(8000);
         connection.setRequestProperty("User-Agent", "utapractice-android");
         int status = connection.getResponseCode();
         if (status < 200 || status >= 300) throw new IOException("HTTP " + status);
