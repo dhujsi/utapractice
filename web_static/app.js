@@ -202,6 +202,42 @@ function setPage(page) {
   if (window.matchMedia("(max-width: 760px)").matches) els.sidebar.classList.remove("open");
 }
 
+let sidebarSwipeStart = null;
+
+function isMobileLayout() {
+  return window.matchMedia("(max-width: 760px)").matches;
+}
+
+function onSidebarSwipeStart(event) {
+  if (!isMobileLayout() || !event.touches?.length) return;
+  const touch = event.touches[0];
+  sidebarSwipeStart = {
+    x: touch.clientX,
+    y: touch.clientY,
+    open: els.sidebar.classList.contains("open"),
+    inSidebar: els.sidebar.contains(event.target),
+  };
+}
+
+function onSidebarSwipeEnd(event) {
+  if (!sidebarSwipeStart || !isMobileLayout() || !event.changedTouches?.length) {
+    sidebarSwipeStart = null;
+    return;
+  }
+  const touch = event.changedTouches[0];
+  const dx = touch.clientX - sidebarSwipeStart.x;
+  const dy = touch.clientY - sidebarSwipeStart.y;
+  const horizontal = Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy) * 1.25;
+
+  if (horizontal && dx < 0 && sidebarSwipeStart.open && sidebarSwipeStart.inSidebar) {
+    els.sidebar.classList.remove("open");
+  }
+  if (horizontal && dx > 0 && !sidebarSwipeStart.open && sidebarSwipeStart.x <= 48) {
+    els.sidebar.classList.add("open");
+  }
+  sidebarSwipeStart = null;
+}
+
 function updateABStatus() {
   const { a, b } = state.ab;
   const active = a != null && b != null && b > a;
@@ -999,7 +1035,7 @@ if (els.apkSyncAll) {
 }
 els.audio.addEventListener("timeupdate", highlightCurrentLyric);
 els.audio.addEventListener("play", () => {
-  els.playButton.textContent = "⏸";
+  els.playButton.textContent = "II";
 });
 els.audio.addEventListener("pause", () => {
   els.playButton.textContent = "▶";
@@ -1115,6 +1151,8 @@ els.publishWorkspace.addEventListener("click", () => publishWorkspace().catch((e
 els.refreshJobs.addEventListener("click", () => loadJobs().catch((error) => showToast(error.message)));
 els.openSidebar.addEventListener("click", () => els.sidebar.classList.add("open"));
 els.closeSidebar.addEventListener("click", () => els.sidebar.classList.remove("open"));
+document.addEventListener("touchstart", onSidebarSwipeStart, { passive: true });
+document.addEventListener("touchend", onSidebarSwipeEnd, { passive: true });
 
 initAndroidBridge();
 
