@@ -208,8 +208,16 @@ function isMobileLayout() {
   return window.matchMedia("(max-width: 760px)").matches;
 }
 
+function shouldIgnoreSidebarSwipe(target) {
+  return Boolean(target.closest("button, input, textarea, select, audio, dialog, [role='button']"));
+}
+
 function onSidebarSwipeStart(event) {
   if (!isMobileLayout() || !event.touches?.length) return;
+  if (shouldIgnoreSidebarSwipe(event.target)) {
+    sidebarSwipeStart = null;
+    return;
+  }
   const touch = event.touches[0];
   sidebarSwipeStart = {
     x: touch.clientX,
@@ -232,7 +240,7 @@ function onSidebarSwipeEnd(event) {
   if (horizontal && dx < 0 && sidebarSwipeStart.open && sidebarSwipeStart.inSidebar) {
     els.sidebar.classList.remove("open");
   }
-  if (horizontal && dx > 0 && !sidebarSwipeStart.open && sidebarSwipeStart.x <= 48) {
+  if (horizontal && dx > 0 && !sidebarSwipeStart.open) {
     els.sidebar.classList.add("open");
   }
   sidebarSwipeStart = null;
