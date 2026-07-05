@@ -17,8 +17,11 @@
 - 已通过：`node --check web_static/app.js`
 - 已通过：`python3 -m py_compile web_app.py`
 - 已通过：静态 HTTP + Playwright 手机宽度检查上传区控件可见，网页 `--safe-top` 为 `0px`，生成页输入框不会被横滑逻辑忽略。
+- 已通过：fnOS 部署后 `POST /api/upload/lyrics-text` 写入临时 LRC 成功，随后删除临时文件。
+- 已通过：`cd android && ANDROID_HOME=/home/er/android-sdk bash ./gradlew assembleDebug`
+- 已通过：`unzip -p dist/utapractice-lyrics-input-debug.apk assets/webapp/index.html` 可看到 `lyricsTargetSongSelect`、`lyricsTextInput`、`saveLyricsText`。
+- APK 输出：`dist/utapractice-lyrics-input-debug.apk`
 - 未完成：本机 Python 缺少 Flask/OpenAI/librosa/soundfile，未能启动 Flask 做真接口 test client 验证。
-- 待本次构建：`cd android && bash ./gradlew assembleDebug`，当前机器已有 JDK。
 
 ## 后续建议
 
