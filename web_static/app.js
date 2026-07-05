@@ -103,6 +103,9 @@ const els = {
 };
 
 let jobPollTimer = null;
+const EDGE_SWIPE_WIDTH = 36;
+const SIDEBAR_SWIPE_DISTANCE = 48;
+const SIDEBAR_SWIPE_RATIO = 1.2;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -224,7 +227,28 @@ function onSidebarSwipeStart(event) {
     y: touch.clientY,
     open: els.sidebar.classList.contains("open"),
     inSidebar: els.sidebar.contains(event.target),
+    fromEdge: touch.clientX <= EDGE_SWIPE_WIDTH,
+    canOpen: touch.clientX <= EDGE_SWIPE_WIDTH || !els.sidebar.contains(event.target),
   };
+}
+
+function sidebarSwipeAction(touch) {
+  const dx = touch.clientX - sidebarSwipeStart.x;
+  const dy = touch.clientY - sidebarSwipeStart.y;
+  const horizontal = Math.abs(dx) > SIDEBAR_SWIPE_DISTANCE && Math.abs(dx) > Math.abs(dy) * SIDEBAR_SWIPE_RATIO;
+
+  if (horizontal && dx < 0 && sidebarSwipeStart.open && sidebarSwipeStart.inSidebar) {
+    return "close";
+  }
+  if (horizontal && dx > 0 && !sidebarSwipeStart.open && sidebarSwipeStart.canOpen) {
+    return "open";
+  }
+  return null;
+}
+
+function onSidebarSwipeMove(event) {
+  if (!sidebarSwipeStart || !isMobileLayout() || !event.touches?.length) return;
+  if (sidebarSwipeAction(event.touches[0])) event.preventDefault();
 }
 
 function onSidebarSwipeEnd(event) {
@@ -232,15 +256,11 @@ function onSidebarSwipeEnd(event) {
     sidebarSwipeStart = null;
     return;
   }
-  const touch = event.changedTouches[0];
-  const dx = touch.clientX - sidebarSwipeStart.x;
-  const dy = touch.clientY - sidebarSwipeStart.y;
-  const horizontal = Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy) * 1.25;
-
-  if (horizontal && dx < 0 && sidebarSwipeStart.open && sidebarSwipeStart.inSidebar) {
+  const action = sidebarSwipeAction(event.changedTouches[0]);
+  if (action === "close") {
     els.sidebar.classList.remove("open");
   }
-  if (horizontal && dx > 0 && !sidebarSwipeStart.open) {
+  if (action === "open") {
     els.sidebar.classList.add("open");
   }
   sidebarSwipeStart = null;
@@ -375,11 +395,32 @@ function renderLyrics() {
     node.innerHTML = lineText(line);
     node.addEventListener("click", () => {
       if (!state.current?.has_audio) return;
-      els.audio.currentTime = Number(line.time || 0);
-      els.audio.play().catch(() => {});
+      seekAudioTo(Number(line.time || 0), { play: true });
     });
     els.lyrics.append(node);
   }
+}
+
+function seekAudioTo(time, { play = false } = {}) {
+  const target = Math.max(0, Number(time) || 0);
+  const applySeek = () => {
+    const duration = Number(els.audio.duration);
+    els.audio.currentTime = Number.isFinite(duration) && duration > 0 ? Math.min(target, duration) : target;
+    if (play) els.audio.play().catch(() => {});
+  };
+
+  if (els.audio.readyState >= 1) {
+    applySeek();
+    return;
+  }
+
+  const onReady = () => {
+    els.audio.removeEventListener("loadedmetadata", onReady);
+    els.audio.removeEventListener("canplay", onReady);
+    applySeek();
+  };
+  els.audio.addEventListener("loadedmetadata", onReady, { once: true });
+  els.audio.addEventListener("canplay", onReady, { once: true });
 }
 
 function syncAudioSource() {
@@ -1160,6 +1201,7 @@ els.refreshJobs.addEventListener("click", () => loadJobs().catch((error) => show
 els.openSidebar.addEventListener("click", () => els.sidebar.classList.add("open"));
 els.closeSidebar.addEventListener("click", () => els.sidebar.classList.remove("open"));
 document.addEventListener("touchstart", onSidebarSwipeStart, { passive: true });
+document.addEventListener("touchmove", onSidebarSwipeMove, { passive: false });
 document.addEventListener("touchend", onSidebarSwipeEnd, { passive: true });
 
 initAndroidBridge();

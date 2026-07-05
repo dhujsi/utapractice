@@ -33,6 +33,8 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 public class MainActivity extends Activity {
     private static final String APP_ORIGIN = "https://utapractice.local";
@@ -122,7 +124,7 @@ public class MainActivity extends Activity {
         }
 
         try {
-            WebResourceResponse cached = cachedFirstResponse(uri);
+            WebResourceResponse cached = cachedFirstResponse(request);
             if (cached != null) {
                 return cached;
             }
@@ -131,11 +133,12 @@ public class MainActivity extends Activity {
             cacheGetResponse(uri, remote);
             return bytesResponse(mimeForPath(uri.getPath()), remote);
         } catch (Exception ignored) {
-            return cachedApiResponse(uri);
+            return cachedApiResponse(request);
         }
     }
 
-    private WebResourceResponse cachedFirstResponse(Uri uri) throws IOException {
+    private WebResourceResponse cachedFirstResponse(WebResourceRequest request) throws IOException {
+        Uri uri = request.getUrl();
         String path = uri.getPath();
         if ("/api/songs".equals(path) && songsListFile().exists()) {
             return fileResponse("application/json", songsListFile());
@@ -145,7 +148,7 @@ public class MainActivity extends Activity {
         if (path != null && path.startsWith(audioPrefix) && path.endsWith("/audio")) {
             String name = Uri.decode(path.substring(audioPrefix.length(), path.length() - "/audio".length()));
             File audio = audioFile(name);
-            if (audio.exists()) return fileResponse(audioMimeFile(name), audio);
+            if (audio.exists()) return audioFileResponse(audioMimeFile(name), audio, request);
             return null;
         }
 
@@ -172,7 +175,8 @@ public class MainActivity extends Activity {
         }
     }
 
-    private WebResourceResponse cachedApiResponse(Uri uri) {
+    private WebResourceResponse cachedApiResponse(WebResourceRequest request) {
+        Uri uri = request.getUrl();
         String path = uri.getPath();
         try {
             if ("/api/songs".equals(path) && songsListFile().exists()) {
@@ -192,7 +196,7 @@ public class MainActivity extends Activity {
             if (path != null && path.startsWith(audioPrefix) && path.endsWith("/audio")) {
                 String name = Uri.decode(path.substring(audioPrefix.length(), path.length() - "/audio".length()));
                 File audio = audioFile(name);
-                if (audio.exists()) return fileResponse(audioMimeFile(name), audio);
+                if (audio.exists()) return audioFileResponse(audioMimeFile(name), audio, request);
                 return jsonResponse(404, "{\"error\":\"这首歌没有离线音频，请先同步\"}");
             }
 
@@ -206,15 +210,6 @@ public class MainActivity extends Activity {
             return jsonResponse(500, "{\"error\":\"读取 APK 离线缓存失败\"}");
         }
         return jsonResponse(503, "{\"error\":\"离线模式不支持这个接口\"}");
-    }
-
-    private WebResourceResponse cachedAudioResponse(Uri uri) throws IOException {
-        String path = uri.getPath();
-        if (path == null || !path.startsWith("/api/songs/") || !path.endsWith("/audio")) return null;
-        String name = Uri.decode(path.substring("/api/songs/".length(), path.length() - "/audio".length()));
-        File audio = audioFile(name);
-        if (!audio.exists()) return null;
-        return fileResponse(audioMimeFile(name), audio);
     }
 
     private class AndroidBridge {
@@ -364,7 +359,111 @@ public class MainActivity extends Activity {
     }
 
     private WebResourceResponse fileResponse(String mimeType, File file) throws IOException {
-        return new WebResourceResponse(mimeType, "UTF-8", new FileInputStream(file));
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Content-Type", mimeType);
+        headers.put("Content-Length", String.valueOf(file.length()));
+        return new WebResourceResponse(mimeType, null, 200, "OK", headers, new FileInputStream(file));
+    }
+
+    private WebResourceResponse audioFileResponse(String mimeType, File file, WebResourceRequest request) throws IOException {
+        long fileLength = file.length();
+        String rangeHeader = request.getRequestHeaders() == null ? null : request.getRequestHeaders().get("Range");
+        if (rangeHeader == null) rangeHeader = requestHeader(request, "Range");
+
+        if (rangeHeader == null || rangeHeader.trim().isEmpty()) {
+            Map<String, String> headers = audioHeaders(mimeType, fileLength);
+            return new WebResourceResponse(mimeType, null, 200, "OK", headers, new FileInputStream(file));
+        }
+
+        RangeSpec range = parseRangeHeader(rangeHeader, fileLength);
+        if (range == null) {
+            Map<String, String> headers = audioHeaders(mimeType, 0);
+            headers.put("Content-Range", "bytes */" + fileLength);
+            return new WebResourceResponse(mimeType, null, 416, "Range Not Satisfiable", headers, new ByteArrayInputStream(new byte[0]));
+        }
+
+        Map<String, String> headers = audioHeaders(mimeType, range.length());
+        headers.put("Content-Range", "bytes " + range.start + "-" + range.end + "/" + fileLength);
+        return new WebResourceResponse(
+            mimeType,
+            null,
+            206,
+            "Partial Content",
+            headers,
+            new BoundedInputStream(openFileAt(file, range.start), range.length())
+        );
+    }
+
+    private Map<String, String> audioHeaders(String mimeType, long contentLength) {
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Accept-Ranges", "bytes");
+        headers.put("Content-Type", mimeType);
+        headers.put("Content-Length", String.valueOf(contentLength));
+        return headers;
+    }
+
+    private String requestHeader(WebResourceRequest request, String name) {
+        Map<String, String> headers = request.getRequestHeaders();
+        if (headers == null) return null;
+        String value = headers.get(name);
+        if (value != null) return value;
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if (name.equalsIgnoreCase(entry.getKey())) return entry.getValue();
+        }
+        return null;
+    }
+
+    private RangeSpec parseRangeHeader(String header, long fileLength) {
+        if (header == null || fileLength <= 0) return null;
+        String value = header.trim();
+        if (!value.startsWith("bytes=") || value.contains(",")) return null;
+
+        String range = value.substring("bytes=".length()).trim();
+        int dash = range.indexOf('-');
+        if (dash < 0) return null;
+
+        String startText = range.substring(0, dash).trim();
+        String endText = range.substring(dash + 1).trim();
+        try {
+            long start;
+            long end;
+            if (startText.isEmpty()) {
+                long suffixLength = Long.parseLong(endText);
+                if (suffixLength <= 0) return null;
+                start = Math.max(fileLength - suffixLength, 0);
+                end = fileLength - 1;
+            } else {
+                start = Long.parseLong(startText);
+                end = endText.isEmpty() ? fileLength - 1 : Long.parseLong(endText);
+            }
+            if (start < 0 || start >= fileLength || end < start) return null;
+            return new RangeSpec(start, Math.min(end, fileLength - 1));
+        } catch (NumberFormatException error) {
+            return null;
+        }
+    }
+
+    private FileInputStream openFileAt(File file, long offset) throws IOException {
+        FileInputStream input = new FileInputStream(file);
+        try {
+            skipFully(input, offset);
+            return input;
+        } catch (IOException error) {
+            input.close();
+            throw error;
+        }
+    }
+
+    private void skipFully(InputStream input, long offset) throws IOException {
+        long remaining = offset;
+        while (remaining > 0) {
+            long skipped = input.skip(remaining);
+            if (skipped <= 0) {
+                if (input.read() == -1) throw new IOException("Unable to seek cached audio");
+                skipped = 1;
+            }
+            remaining -= skipped;
+        }
     }
 
     private WebResourceResponse jsonResponse(int status, String json) {
@@ -447,6 +546,51 @@ public class MainActivity extends Activity {
         HttpResult(byte[] bytes, String contentType) {
             this.bytes = bytes;
             this.contentType = contentType;
+        }
+    }
+
+    private static class RangeSpec {
+        final long start;
+        final long end;
+
+        RangeSpec(long start, long end) {
+            this.start = start;
+            this.end = end;
+        }
+
+        long length() {
+            return end - start + 1;
+        }
+    }
+
+    private static class BoundedInputStream extends InputStream {
+        private final InputStream input;
+        private long remaining;
+
+        BoundedInputStream(InputStream input, long length) {
+            this.input = input;
+            this.remaining = length;
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (remaining <= 0) return -1;
+            int value = input.read();
+            if (value != -1) remaining -= 1;
+            return value;
+        }
+
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            if (remaining <= 0) return -1;
+            int count = input.read(buffer, offset, (int) Math.min(length, remaining));
+            if (count != -1) remaining -= count;
+            return count;
+        }
+
+        @Override
+        public void close() throws IOException {
+            input.close();
         }
     }
 }
