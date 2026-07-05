@@ -48,14 +48,25 @@ test("web safe-area spacing is only enabled inside the APK shell", () => {
 test("library upload UI exposes statuses and manual audio target binding", () => {
   assert.match(indexHtml, /id="audioTargetSongSelect"/);
   assert.match(indexHtml, /id="audioUploadButton"/);
+  assert.match(indexHtml, /id="lyricsTargetSongSelect"/);
+  assert.match(indexHtml, /id="lyricsSongNameInput"/);
+  assert.match(indexHtml, /id="lyricsTextType"/);
+  assert.match(indexHtml, /id="lyricsTextInput"/);
+  assert.match(indexHtml, /id="saveLyricsText"/);
   assert.match(indexHtml, /id="lyricsUploadButton"/);
   assert.match(indexHtml, /id="audioUploadStatus"/);
   assert.match(indexHtml, /id="lyricsUploadStatus"/);
   assert.match(appJs, /audioTargetSongSelect/);
   assert.match(appJs, /audioUploadButton/);
+  assert.match(appJs, /lyricsTargetSongSelect/);
+  assert.match(appJs, /lyricsSongNameInput/);
+  assert.match(appJs, /lyricsTextType/);
+  assert.match(appJs, /lyricsTextInput/);
+  assert.match(appJs, /saveLyricsText/);
   assert.match(appJs, /lyricsUploadButton/);
   assert.match(appJs, /target_song/);
   assert.match(appJs, /has_lyrics && !song\.has_audio/);
+  assert.match(appJs, /song\.has_audio && !song\.has_lyrics/);
 });
 
 test("audio upload endpoint can attach one arbitrary-named file to a lyric-only song", () => {
@@ -64,6 +75,26 @@ test("audio upload endpoint can attach one arbitrary-named file to a lyric-only 
   assert.match(webApp, /if not song\["lyrics_path"\]:/);
   assert.match(webApp, /if song\["audio_path"\]:/);
   assert.match(webApp, /target = SONG_DIR \/ f"\{target_song\}\{suffix\}"/);
+});
+
+test("lyrics upload and typed lyrics can attach to an audio-only song", () => {
+  assert.match(webApp, /@app\.post\("\/api\/upload\/lyrics-text"\)/);
+  assert.match(webApp, /target_song = sanitize_filename\(request\.form\.get\("target_song", ""\)\.strip\(\)\)/);
+  assert.match(webApp, /payload\.get\("target_song"/);
+  assert.match(webApp, /lyrics_type = str\(payload\.get\("lyrics_type", "lrc"\)\)/);
+  assert.match(webApp, /parse_lrc\(lyrics_text\)/);
+  assert.match(webApp, /json\.loads\(lyrics_text\)/);
+  assert.match(webApp, /Target song already has lyrics/);
+  assert.match(appJs, /\/api\/upload\/lyrics-text/);
+  assert.match(appJs, /renderLyricsTargetOptions/);
+});
+
+test("mobile sidebar stays open when switching side pages", () => {
+  const setPageFunction = appJs.match(/function setPage\(page\) \{[\s\S]*?\n\}/)?.[0] || "";
+  assert.ok(setPageFunction);
+  assert.doesNotMatch(setPageFunction, /classList\.remove\("open"\)/);
+  assert.match(appJs, /function closeSidebarOnMobile\(\)/);
+  assert.match(appJs, /els\.libraryLoadSong\.addEventListener\("click",[\s\S]*closeSidebarOnMobile\(\)/);
 });
 
 test("main web page has exactly one shared audio element", () => {

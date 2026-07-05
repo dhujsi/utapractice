@@ -132,11 +132,32 @@
         <section class="panel">
           <h2>添加歌词</h2>
           <label class="field">
+            <span>关联已有歌曲</span>
+            <select id="lyricsTargetSongSelect"></select>
+          </label>
+          <label class="field">
+            <span>新歌词歌名</span>
+            <input id="lyricsSongNameInput" type="text" autocomplete="off" placeholder="未关联时填写">
+          </label>
+          <label class="field">
             <span>LRC / JSON</span>
             <input id="lyricsUploadInput" type="file" multiple accept=".lrc,.json,application/json">
           </label>
           <button type="button" id="lyricsUploadButton" class="wide-button">上传歌词</button>
           <p class="status-line upload-status" id="lyricsUploadStatus">未选择文件</p>
+          <label class="field">
+            <span>输入格式</span>
+            <select id="lyricsTextType">
+              <option value="lrc">LRC</option>
+              <option value="json">JSON</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>粘贴歌词</span>
+            <textarea id="lyricsTextInput" class="small-textarea" spellcheck="false" placeholder="[00:12.34]歌词..."></textarea>
+          </label>
+          <button type="button" id="saveLyricsText" class="wide-button">保存输入歌词</button>
+          <p class="status-line upload-status" id="lyricsTextStatus">可粘贴 LRC 或 JSON 歌词</p>
         </section>
       </div>
 

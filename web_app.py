@@ -1663,18 +1663,93 @@ def api_upload_audio():
 
 @app.post("/api/upload/lyrics")
 def api_upload_lyrics():
-    files = request.files.getlist("lyrics")
+    files = [file for file in request.files.getlist("lyrics") if file.filename]
+    target_song = sanitize_filename(request.form.get("target_song", "").strip())
+    song_name = sanitize_filename(request.form.get("song_name", "").strip())
     saved = []
+    if not files:
+        return jsonify({"error": "No lyrics files uploaded"}), 400
+    if target_song and len(files) != 1:
+        return jsonify({"error": "Only one lyrics file can be attached to an existing song"}), 400
+    if target_song:
+        song = find_available_songs().get(target_song)
+        if not song:
+            return jsonify({"error": "Target song not found"}), 404
+        if not song["audio_path"]:
+            return jsonify({"error": "Target song has no audio"}), 400
+        if song["lyrics_path"]:
+            return jsonify({"error": "Target song already has lyrics"}), 409
+    elif song_name and len(files) != 1:
+        return jsonify({"error": "Only one lyrics file can use a custom song name"}), 400
+
     for file in files:
-        if not file.filename:
-            continue
         filename = sanitize_filename(file.filename)
-        if Path(filename).suffix.lower() not in LYRICS_EXTENSIONS:
+        suffix = Path(filename).suffix.lower()
+        if suffix not in LYRICS_EXTENSIONS:
             return jsonify({"error": f"Unsupported lyrics file: {filename}"}), 400
-        target = SONG_DIR / filename
+        save_name = target_song or song_name
+        target = SONG_DIR / f"{save_name}{suffix}" if save_name else SONG_DIR / filename
+        existing = find_available_songs().get(save_name) if save_name else None
+        if existing and existing["lyrics_path"]:
+            return jsonify({"error": "Target song already has lyrics"}), 409
+        if target.exists():
+            return jsonify({"error": "Target lyrics file already exists"}), 409
         file.save(target)
-        saved.append(filename)
+        saved.append(target.name)
     return jsonify({"ok": True, "saved": saved})
+
+
+@app.post("/api/upload/lyrics-text")
+def api_upload_lyrics_text():
+    payload = request.get_json(force=True)
+    target_song = sanitize_filename(str(payload.get("target_song", "")).strip())
+    song_name = sanitize_filename(str(payload.get("song_name", "")).strip())
+    lyrics_text = str(payload.get("lyrics_text", "")).strip()
+    lyrics_type = str(payload.get("lyrics_type", "lrc"))
+    lyrics_type = lyrics_type.strip().lower()
+
+    if target_song:
+        song = find_available_songs().get(target_song)
+        if not song:
+            return jsonify({"error": "Target song not found"}), 404
+        if not song["audio_path"]:
+            return jsonify({"error": "Target song has no audio"}), 400
+        if song["lyrics_path"]:
+            return jsonify({"error": "Target song already has lyrics"}), 409
+        song_name = target_song
+    if not song_name:
+        return jsonify({"error": "Song name is required"}), 400
+    if not lyrics_text:
+        return jsonify({"error": "Lyrics text is required"}), 400
+    if lyrics_type not in {"lrc", "json"}:
+        return jsonify({"error": "Lyrics type must be lrc or json"}), 400
+
+    existing = find_available_songs().get(song_name)
+    if existing and existing["lyrics_path"]:
+        return jsonify({"error": "Target song already has lyrics"}), 409
+
+    if lyrics_type == "json":
+        try:
+            parsed = json.loads(lyrics_text)
+        except json.JSONDecodeError as exc:
+            return jsonify({"error": f"Invalid JSON lyrics: {exc}"}), 400
+        if not isinstance(parsed, list):
+            return jsonify({"error": "JSON lyrics must be an array"}), 400
+        target = SONG_DIR / f"{song_name}.json"
+        if target.exists():
+            return jsonify({"error": "Target lyrics file already exists"}), 409
+        with target.open("w", encoding="utf-8") as f:
+            json.dump(parsed, f, indent=2, ensure_ascii=False)
+        return jsonify({"ok": True, "song_name": song_name, "saved": target.name, "lines": len(parsed)})
+
+    rows = parse_lrc(lyrics_text)
+    if not rows:
+        return jsonify({"error": "LRC lyrics must include timestamped lines"}), 400
+    target = SONG_DIR / f"{song_name}.lrc"
+    if target.exists():
+        return jsonify({"error": "Target lyrics file already exists"}), 409
+    target.write_text(f"{lyrics_text}\n", encoding="utf-8")
+    return jsonify({"ok": True, "song_name": song_name, "saved": target.name, "lines": len(rows)})
 
 
 @app.post("/api/lyrics-search")
