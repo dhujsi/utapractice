@@ -1632,17 +1632,32 @@ def api_delete_song(name):
 
 @app.post("/api/upload/audio")
 def api_upload_audio():
-    files = request.files.getlist("audio")
+    files = [file for file in request.files.getlist("audio") if file.filename]
+    target_song = sanitize_filename(request.form.get("target_song", "").strip())
     saved = []
+    if not files:
+        return jsonify({"error": "No audio files uploaded"}), 400
+    if target_song and len(files) != 1:
+        return jsonify({"error": "Only one audio file can be attached to an existing lyric"}), 400
+    if target_song:
+        song = find_available_songs().get(target_song)
+        if not song:
+            return jsonify({"error": "Target lyric song not found"}), 404
+        if not song["lyrics_path"]:
+            return jsonify({"error": "Target song has no lyrics"}), 400
+        if song["audio_path"]:
+            return jsonify({"error": "Target song already has audio"}), 409
+
     for file in files:
-        if not file.filename:
-            continue
         filename = sanitize_filename(file.filename)
-        if Path(filename).suffix.lower() not in AUDIO_EXTENSIONS:
+        suffix = Path(filename).suffix.lower()
+        if suffix not in AUDIO_EXTENSIONS:
             return jsonify({"error": f"Unsupported audio file: {filename}"}), 400
-        target = SONG_DIR / filename
+        target = SONG_DIR / f"{target_song}{suffix}" if target_song else SONG_DIR / filename
+        if target_song and target.exists():
+            return jsonify({"error": "Target audio file already exists"}), 409
         file.save(target)
-        saved.append(filename)
+        saved.append(target.name)
     return jsonify({"ok": True, "saved": saved})
 
 

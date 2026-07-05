@@ -118,17 +118,25 @@
         <section class="panel">
           <h2>添加音频</h2>
           <label class="field">
-            <span>MP3 / WAV / FLAC / M4A，可单独上传</span>
+            <span>MP3 / WAV / FLAC / M4A</span>
             <input id="audioUploadInput" type="file" multiple accept=".mp3,.wav,.flac,.m4a,audio/*">
           </label>
+          <label class="field">
+            <span>关联已有歌词</span>
+            <select id="audioTargetSongSelect"></select>
+          </label>
+          <button type="button" id="audioUploadButton" class="wide-button">上传音频</button>
+          <p class="status-line upload-status" id="audioUploadStatus">未选择文件</p>
         </section>
 
         <section class="panel">
           <h2>添加歌词</h2>
           <label class="field">
-            <span>LRC / JSON，可单独上传。与音频同名会自动合并。</span>
+            <span>LRC / JSON</span>
             <input id="lyricsUploadInput" type="file" multiple accept=".lrc,.json,application/json">
           </label>
+          <button type="button" id="lyricsUploadButton" class="wide-button">上传歌词</button>
+          <p class="status-line upload-status" id="lyricsUploadStatus">未选择文件</p>
         </section>
       </div>
 

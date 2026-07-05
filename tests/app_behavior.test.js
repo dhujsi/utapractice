@@ -4,6 +4,9 @@ const assert = require("node:assert/strict");
 
 const androidMain = readFileSync("android/app/src/main/java/com/utapractice/app/MainActivity.java", "utf8");
 const appJs = readFileSync("web_static/app.js", "utf8");
+const appCss = readFileSync("web_static/app.css", "utf8");
+const indexHtml = readFileSync("templates/index.html", "utf8");
+const webApp = readFileSync("web_app.py", "utf8");
 
 test("APK local audio responses implement HTTP Range semantics", () => {
   assert.match(androidMain, /getRequestHeaders\(\)\.get\("Range"\)/);
@@ -28,6 +31,43 @@ test("mobile sidebar swipe is implemented in the shared web UI", () => {
   assert.match(appJs, /document\.addEventListener\("touchmove", onSidebarSwipeMove/);
   assert.match(appJs, /document\.addEventListener\("touchend", onSidebarSwipeEnd/);
   assert.match(appJs, /EDGE_SWIPE_WIDTH/);
+});
+
+test("mobile sidebar swipe can start on generator form controls", () => {
+  const ignoreFunction = appJs.match(/function shouldIgnoreSidebarSwipe\(target\) \{[\s\S]*?\n\}/)?.[0] || "";
+  assert.ok(ignoreFunction);
+  assert.doesNotMatch(ignoreFunction, /button|input|textarea|select/);
+});
+
+test("web safe-area spacing is only enabled inside the APK shell", () => {
+  assert.match(appCss, /--safe-top:\s*0px/);
+  assert.match(appCss, /:root\.android-shell\s*\{[\s\S]*--safe-top:\s*env\(safe-area-inset-top,\s*0px\)/);
+  assert.match(appJs, /document\.documentElement\.classList\.add\("android-shell"\)/);
+});
+
+test("library upload UI exposes statuses and manual audio target binding", () => {
+  assert.match(indexHtml, /id="audioTargetSongSelect"/);
+  assert.match(indexHtml, /id="audioUploadButton"/);
+  assert.match(indexHtml, /id="lyricsUploadButton"/);
+  assert.match(indexHtml, /id="audioUploadStatus"/);
+  assert.match(indexHtml, /id="lyricsUploadStatus"/);
+  assert.match(appJs, /audioTargetSongSelect/);
+  assert.match(appJs, /audioUploadButton/);
+  assert.match(appJs, /lyricsUploadButton/);
+  assert.match(appJs, /target_song/);
+  assert.match(appJs, /has_lyrics && !song\.has_audio/);
+});
+
+test("audio upload endpoint can attach one arbitrary-named file to a lyric-only song", () => {
+  assert.match(webApp, /target_song = sanitize_filename\(request\.form\.get\("target_song", ""\)\.strip\(\)\)/);
+  assert.match(webApp, /if target_song and len\(files\) != 1:/);
+  assert.match(webApp, /if not song\["lyrics_path"\]:/);
+  assert.match(webApp, /if song\["audio_path"\]:/);
+  assert.match(webApp, /target = SONG_DIR \/ f"\{target_song\}\{suffix\}"/);
+});
+
+test("main web page has exactly one shared audio element", () => {
+  assert.equal((indexHtml.match(/id="audio"/g) || []).length, 1);
 });
 
 test("completed workspace jobs can reopen generated lyrics for preview and publishing", () => {

@@ -67,7 +67,12 @@ const els = {
   saveLyrics: document.getElementById("saveLyrics"),
   editorError: document.getElementById("editorError"),
   audioUploadInput: document.getElementById("audioUploadInput"),
+  audioTargetSongSelect: document.getElementById("audioTargetSongSelect"),
+  audioUploadButton: document.getElementById("audioUploadButton"),
+  audioUploadStatus: document.getElementById("audioUploadStatus"),
   lyricsUploadInput: document.getElementById("lyricsUploadInput"),
+  lyricsUploadButton: document.getElementById("lyricsUploadButton"),
+  lyricsUploadStatus: document.getElementById("lyricsUploadStatus"),
   baseUrlInput: document.getElementById("baseUrlInput"),
   apiKeyInput: document.getElementById("apiKeyInput"),
   modelInput: document.getElementById("modelInput"),
@@ -162,7 +167,9 @@ function setApkSyncProgress(progress) {
 }
 
 function initAndroidBridge() {
-  if (!hasAndroidBridge() || !els.apkSyncPanel) return;
+  if (!hasAndroidBridge()) return;
+  document.documentElement.classList.add("android-shell");
+  if (!els.apkSyncPanel) return;
   els.apkSyncPanel.hidden = false;
   try {
     els.apkServerUrl.value = window.UtaPracticeAndroid.getServerUrl?.() || "";
@@ -212,7 +219,7 @@ function isMobileLayout() {
 }
 
 function shouldIgnoreSidebarSwipe(target) {
-  return Boolean(target.closest("button, input, textarea, select, audio, dialog, [role='button']"));
+  return Boolean(target.closest("audio, dialog"));
 }
 
 function onSidebarSwipeStart(event) {
@@ -319,6 +326,62 @@ function selectedLibrarySong() {
   return state.songs.find((song) => song.name === els.librarySongSelect.value) || null;
 }
 
+function setUploadStatus(statusEl, message, kind = "") {
+  if (!statusEl) return;
+  statusEl.textContent = message;
+  statusEl.classList.toggle("is-error", kind === "error");
+  statusEl.classList.toggle("is-success", kind === "success");
+}
+
+function selectedFilesLabel(input) {
+  const files = Array.from(input?.files || []);
+  if (!files.length) return "未选择文件";
+  if (files.length === 1) return files[0].name;
+  return `${files.length} 个文件`;
+}
+
+function renderAudioTargetOptions() {
+  if (!els.audioTargetSongSelect) return;
+  const previous = els.audioTargetSongSelect.value;
+  const lyricOnlySongs = state.songs.filter((song) => song.has_lyrics && !song.has_audio);
+
+  els.audioTargetSongSelect.innerHTML = "";
+  const defaultOption = document.createElement("option");
+  defaultOption.value = "";
+  defaultOption.textContent = "不关联，按文件名入库";
+  els.audioTargetSongSelect.append(defaultOption);
+
+  if (!lyricOnlySongs.length) {
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.disabled = true;
+    emptyOption.textContent = "暂无无音频歌词";
+    els.audioTargetSongSelect.append(emptyOption);
+  }
+
+  for (const song of lyricOnlySongs) {
+    const option = document.createElement("option");
+    option.value = song.name;
+    option.textContent = song.name;
+    els.audioTargetSongSelect.append(option);
+  }
+
+  if (lyricOnlySongs.some((song) => song.name === previous)) {
+    els.audioTargetSongSelect.value = previous;
+  }
+}
+
+function updateAudioUploadStatus() {
+  const targetSong = els.audioTargetSongSelect?.value || "";
+  const fileLabel = selectedFilesLabel(els.audioUploadInput);
+  const suffix = targetSong ? ` · 关联 ${targetSong}` : "";
+  setUploadStatus(els.audioUploadStatus, `${fileLabel}${suffix}`);
+}
+
+function updateLyricsUploadStatus() {
+  setUploadStatus(els.lyricsUploadStatus, selectedFilesLabel(els.lyricsUploadInput));
+}
+
 function renderLibraryInfo() {
   const song = selectedLibrarySong();
   if (!song) {
@@ -345,6 +408,7 @@ function renderSongSelect() {
     els.songSelect.append(option);
     els.librarySongSelect.append(option.cloneNode(true));
     renderLibraryInfo();
+    renderAudioTargetOptions();
     return;
   }
   for (const song of songs) {
@@ -363,6 +427,7 @@ function renderSongSelect() {
     loadSong(songs[0].name).catch((error) => showToast(error.message));
   }
   renderLibraryInfo();
+  renderAudioTargetOptions();
 }
 
 function lineText(line) {
@@ -514,13 +579,62 @@ async function saveMeta(patch, message) {
   showToast(message);
 }
 
-async function uploadFiles(input, fieldName, url) {
+async function uploadFiles({ input, fieldName, url, statusEl, button, formFields = {}, successMessage = "上传完成" }) {
+  const files = Array.from(input?.files || []);
+  if (!files.length) {
+    setUploadStatus(statusEl, "请先选择文件", "error");
+    return;
+  }
   const data = new FormData();
-  for (const file of input.files) data.append(fieldName, file);
-  await requestJson(url, { method: "POST", body: data });
-  input.value = "";
-  await loadSongs();
-  showToast("上传完成");
+  for (const file of files) data.append(fieldName, file);
+  for (const [key, value] of Object.entries(formFields)) {
+    if (value) data.append(key, value);
+  }
+
+  if (button) button.disabled = true;
+  setUploadStatus(statusEl, `正在上传 ${files.length} 个文件...`);
+  try {
+    const result = await requestJson(url, { method: "POST", body: data });
+    input.value = "";
+    await loadSongs();
+    const count = Array.isArray(result.saved) ? result.saved.length : files.length;
+    setUploadStatus(statusEl, `上传完成：${count} 个文件`, "success");
+    showToast(successMessage);
+  } catch (error) {
+    setUploadStatus(statusEl, error.message, "error");
+    showToast(error.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function uploadAudioFiles() {
+  const files = Array.from(els.audioUploadInput?.files || []);
+  const target_song = els.audioTargetSongSelect?.value || "";
+  if (target_song && files.length !== 1) {
+    setUploadStatus(els.audioUploadStatus, "关联歌词时只能上传一个音频文件", "error");
+    return;
+  }
+  await uploadFiles({
+    input: els.audioUploadInput,
+    fieldName: "audio",
+    url: "/api/upload/audio",
+    statusEl: els.audioUploadStatus,
+    button: els.audioUploadButton,
+    formFields: { target_song },
+    successMessage: "音频上传完成",
+  });
+}
+
+async function uploadLyricsFiles() {
+  await uploadFiles({
+    input: els.lyricsUploadInput,
+    fieldName: "lyrics",
+    url: "/api/upload/lyrics",
+    statusEl: els.lyricsUploadStatus,
+    button: els.lyricsUploadButton,
+    successMessage: "歌词上传完成",
+  });
 }
 
 async function loadSettings() {
@@ -1214,8 +1328,11 @@ els.saveLyrics.addEventListener("click", async () => {
   }
 });
 
-els.audioUploadInput.addEventListener("change", () => uploadFiles(els.audioUploadInput, "audio", "/api/upload/audio"));
-els.lyricsUploadInput.addEventListener("change", () => uploadFiles(els.lyricsUploadInput, "lyrics", "/api/upload/lyrics"));
+els.audioUploadInput.addEventListener("change", updateAudioUploadStatus);
+els.audioTargetSongSelect.addEventListener("change", updateAudioUploadStatus);
+els.audioUploadButton.addEventListener("click", uploadAudioFiles);
+els.lyricsUploadInput.addEventListener("change", updateLyricsUploadStatus);
+els.lyricsUploadButton.addEventListener("click", uploadLyricsFiles);
 els.saveApiSettings.addEventListener("click", async () => {
   els.saveApiSettings.disabled = true;
   els.aiSettingsStatus.textContent = "当前状态：正在保存接口设置...";
