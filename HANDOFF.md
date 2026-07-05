@@ -2,9 +2,10 @@
 
 ## 当前状态
 
-- APK 仍使用原 Web UI，Android 侧只负责 WebView 资源和 `/api` 拦截。
+- APK 打包共享 Web UI，Android 侧只负责 WebView 资源和 `/api` 拦截。
 - APK 离线同步入口仍只在 `window.UtaPracticeAndroid` 存在时显示，普通网页端不会出现。
 - 本次重点修复了 APK 本地音频 Range、歌词点击 seek ready 保护、公共移动端侧栏滑动。
+- 工作页 ruby 生成任务完成后，可从任务列表重新打开工作源、预览生成结果并发布为正式歌词；旧版转换任务仍会直接写入正式歌词。
 
 ## 验证
 

@@ -325,6 +325,16 @@ output {
   width: 100%;
 }
 
+.job-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.job-actions button {
+  margin-top: 0;
+}
+
 .job-delete-button {
   position: absolute;
   right: 6px;

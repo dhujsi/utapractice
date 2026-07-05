@@ -555,6 +555,22 @@ function jobTypeLabel(job) {
   return "旧版稳定整首";
 }
 
+function workspaceJobReadyForPublish(job) {
+  return job.type === "generate_ruby_from_rows" && job.status === "done" && !jobHasFinalFailureLog(job);
+}
+
+async function openWorkspaceJob(job) {
+  if (!job?.song_name) return;
+  setPage("generator");
+  await loadWorkspace(job.song_name);
+  await previewGenerated({ refreshWorkspace: true });
+}
+
+async function publishWorkspaceJob(job) {
+  await openWorkspaceJob(job);
+  await publishWorkspace();
+}
+
 function renderJobs(jobs) {
   els.jobList.innerHTML = "";
   if (!jobs.length) {
@@ -634,6 +650,42 @@ function renderJobs(jobs) {
         scheduleJobPolling();
       });
       item.append(stopButton);
+    }
+    if (workspaceJobReadyForPublish(job)) {
+      const actions = document.createElement("div");
+      actions.className = "job-actions";
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "打开工作源";
+      button.addEventListener("click", async () => {
+        try {
+          await openWorkspaceJob(job);
+        } catch (error) {
+          showToast(error.message);
+        }
+      });
+      actions.append(button);
+
+      {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "发布正式歌词";
+        button.addEventListener("click", async () => {
+          try {
+            await publishWorkspaceJob(job);
+          } catch (error) {
+            showToast(error.message);
+          }
+        });
+        actions.append(button);
+      }
+      item.append(actions);
+    } else if (job.status === "done" && job.type !== "generate_ruby_from_rows") {
+      const note = document.createElement("p");
+      note.className = "meta-line";
+      note.textContent = "旧版任务已直接写入正式歌词，无需转正";
+      item.append(note);
     }
     if (["done", "failed", "stopped"].includes(job.status)) {
       const deleteButton = document.createElement("button");
@@ -757,6 +809,15 @@ function workspaceMatchesEditor(workspace) {
     (workspace.original_lrc || "") === els.workspaceOriginalLrc.value &&
     (workspace.translation_lrc || "") === els.workspaceTranslationLrc.value &&
     (workspace.roman_lrc || "") === els.workspaceRomanLrc.value
+  );
+}
+
+function workspaceEditorIsEmpty() {
+  return (
+    !els.workspaceArtist.value.trim() &&
+    !els.workspaceOriginalLrc.value &&
+    !els.workspaceTranslationLrc.value &&
+    !els.workspaceRomanLrc.value
   );
 }
 
@@ -962,17 +1023,23 @@ async function generateWorkspaceRuby() {
   showToast("后台任务已提交");
 }
 
-async function previewGenerated() {
+async function previewGenerated({ refreshWorkspace = false } = {}) {
   const name = workspaceName();
   if (!name) {
     showToast("请先输入歌曲名");
     return;
   }
-  const workspace = await requestJson(`/api/lyrics-workspace/${encodeURIComponent(name)}`);
+  const workspace = refreshWorkspace
+    ? await loadWorkspace(name)
+    : await requestJson(`/api/lyrics-workspace/${encodeURIComponent(name)}`);
   if (!workspaceMatchesEditor(workspace)) {
-    clearGeneratedPreview("当前编辑内容和已保存工作源不一致，请先保存并重新生成");
-    showToast("没有当前内容对应的生成结果");
-    return;
+    if (workspaceEditorIsEmpty()) {
+      populateWorkspace(workspace);
+    } else {
+      clearGeneratedPreview("当前编辑内容和已保存工作源不一致，请先保存并重新生成");
+      showToast("没有当前内容对应的生成结果");
+      return;
+    }
   }
   if (!workspaceHasGenerated(workspace)) {
     const message = workspace.status === "generating" ? "当前任务仍在生成中，完成后再预览" : "当前工作源尚未生成结果";
