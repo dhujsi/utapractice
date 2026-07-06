@@ -29,3 +29,4 @@
 - APK 本地歌库从空库可用：`/api/songs` 无服务器时返回本机列表或 `[]`，不再隐式依赖默认服务器。
 - APK 新增 Android 文件选择导入桥：`chooseAudioForSong()` 和 `chooseLyricsForSong()` 可把音频/歌词复制到 App 私有目录并更新本地歌库。
 - 共享前端在 APK 环境下把“上传音频/歌词”切换为“导入到本机”，导入完成后刷新歌库。
+- 修复 APK 接口设置漏走同步服务器的问题：`/api/settings` 改为本地读写，`/api/settings/test` 改为用本机保存的 OpenAI 兼容配置直接测试，不再连接默认 `192.168.68.200`。

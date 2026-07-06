@@ -26,6 +26,8 @@ http://192.168.68.200:8502
 - `/api/songs/<name>/meta` 本地保存已学会、音域备注和默认 Key。
 - `/api/songs/<name>/lyrics` 本地保存 JSON 歌词编辑结果。
 - `/api/upload/lyrics-text` 本地保存粘贴的 LRC/JSON 歌词。
+- `/api/settings` 本地保存 OpenAI 兼容 Base URL、模型和 API Key 状态。
+- `/api/settings/test` 直接用本地保存的 OpenAI 兼容配置测试连接，不经过同步服务器。
 - 音频和歌词文件导入通过 Android 文件选择器复制到 App 私有目录。
 - `/api/songs/<name>/audio` 从本机音频缓存返回并支持 HTTP Range。
 

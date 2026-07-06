@@ -139,3 +139,15 @@ test("APK exposes Android file import bridge for local audio and lyrics", () => 
   assert.match(appJs, /chooseAudioForSong/);
   assert.match(appJs, /chooseLyricsForSong/);
 });
+
+test("APK stores AI settings locally instead of proxying them to the sync server", () => {
+  assert.match(androidMain, /settingsFile\(\)/);
+  assert.match(androidMain, /localSettingsJson\(/);
+  assert.match(androidMain, /handleSettingsPost\(/);
+  assert.match(androidMain, /handleSettingsTestPost\(/);
+  assert.match(androidMain, /openAiChatCompletionsUrl\(/);
+  assert.match(androidMain, /"\/api\/settings"\.equals\(path\)/);
+  assert.match(androidMain, /"\/api\/settings\/test"\.equals\(path\)/);
+  assert.match(appJs, /requestJson\("\/api\/settings"/);
+  assert.match(appJs, /requestJson\("\/api\/settings\/test"/);
+});

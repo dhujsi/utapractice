@@ -154,6 +154,9 @@ public class MainActivity extends Activity {
         if ("/api/songs".equals(path)) {
             return jsonResponse(200, localSongsListJson().toString());
         }
+        if ("/api/settings".equals(path)) {
+            return jsonResponse(200, localSettingsJson().toString());
+        }
 
         String audioPrefix = "/api/songs/";
         if (path != null && path.startsWith(audioPrefix) && path.endsWith("/audio")) {
@@ -194,7 +197,7 @@ public class MainActivity extends Activity {
                 return jsonResponse(200, localSongsListJson().toString());
             }
             if ("/api/settings".equals(path)) {
-                return jsonResponse(200, "{\"base_url\":\"\",\"model\":\"\",\"has_api_key\":false}");
+                return jsonResponse(200, localSettingsJson().toString());
             }
             if ("/api/convert-jobs".equals(path)) {
                 return jsonResponse(200, "[]");
@@ -338,6 +341,12 @@ public class MainActivity extends Activity {
         if ("/api/upload/lyrics-text".equals(path)) {
             return handleLyricsTextPost(new JSONObject(emptyJsonObject(body)));
         }
+        if ("/api/settings".equals(path)) {
+            return handleSettingsPost(new JSONObject(emptyJsonObject(body)));
+        }
+        if ("/api/settings/test".equals(path)) {
+            return handleSettingsTestPost();
+        }
         throw new IOException("APK 本地版暂不支持这个接口");
     }
 
@@ -345,6 +354,8 @@ public class MainActivity extends Activity {
         String songPrefix = "/api/songs/";
         return path != null && (
             "/api/upload/lyrics-text".equals(path)
+                || "/api/settings".equals(path)
+                || "/api/settings/test".equals(path)
                 || path.startsWith(songPrefix) && (
                     path.endsWith("/meta")
                         || path.endsWith("/lyrics")
@@ -356,6 +367,52 @@ public class MainActivity extends Activity {
     private String proxyJsonRequest(String method, String path, String body) throws IOException {
         String normalizedMethod = method == null ? "GET" : method.trim().toUpperCase();
         return new String(httpRequest(normalizedMethod, serverUrl() + path, body).bytes, StandardCharsets.UTF_8);
+    }
+
+    private JSONObject handleSettingsPost(JSONObject payload) throws Exception {
+        JSONObject settings = readLocalSettings();
+        if (payload.has("base_url")) settings.put("base_url", payload.optString("base_url", "").trim());
+        if (payload.has("model")) settings.put("model", payload.optString("model", "deepseek-v4-pro").trim());
+        if (payload.has("api_key") && !payload.optString("api_key", "").trim().isEmpty()) {
+            settings.put("api_key", payload.optString("api_key", "").trim());
+        }
+        writeLocalSettings(settings);
+        JSONObject result = new JSONObject();
+        result.put("ok", true);
+        return result;
+    }
+
+    private JSONObject handleSettingsTestPost() throws Exception {
+        JSONObject settings = readLocalSettings();
+        String apiKey = settings.optString("api_key", "").trim();
+        if (apiKey.isEmpty()) throw new IOException("API key is not configured");
+
+        JSONObject payload = new JSONObject();
+        payload.put("model", settings.optString("model", "deepseek-v4-pro"));
+        payload.put("temperature", 0);
+        payload.put("max_tokens", 8);
+        JSONArray messages = new JSONArray();
+        messages.put(new JSONObject().put("role", "system").put("content", "Reply with OK only."));
+        messages.put(new JSONObject().put("role", "user").put("content", "Connection test. Reply OK."));
+        payload.put("messages", messages);
+
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Authorization", "Bearer " + apiKey);
+        HttpResult response = httpRequest("POST", openAiChatCompletionsUrl(settings.optString("base_url", "")), payload.toString(), headers);
+        JSONObject raw = new JSONObject(new String(response.bytes, StandardCharsets.UTF_8));
+        String message = "OK";
+        JSONArray choices = raw.optJSONArray("choices");
+        if (choices != null && choices.length() > 0) {
+            JSONObject choice = choices.optJSONObject(0);
+            JSONObject contentMessage = choice == null ? null : choice.optJSONObject("message");
+            String content = contentMessage == null ? "" : contentMessage.optString("content", "").trim();
+            if (!content.isEmpty()) message = content;
+        }
+
+        JSONObject result = new JSONObject();
+        result.put("ok", true);
+        result.put("message", message);
+        return result;
     }
 
     private JSONObject handleMetaPost(String name, JSONObject payload) throws Exception {
@@ -572,6 +629,57 @@ public class MainActivity extends Activity {
         writeText(songsListFile(), songs.toString());
     }
 
+    private JSONObject localSettingsJson() {
+        JSONObject settings = readLocalSettings();
+        JSONObject visible = new JSONObject();
+        try {
+            visible.put("base_url", settings.optString("base_url", ""));
+            visible.put("model", settings.optString("model", "deepseek-v4-pro"));
+            visible.put("has_api_key", !settings.optString("api_key", "").trim().isEmpty());
+        } catch (Exception ignored) {
+        }
+        return visible;
+    }
+
+    private JSONObject readLocalSettings() {
+        File file = settingsFile();
+        if (!file.exists()) return defaultSettings();
+        try (InputStream input = new FileInputStream(file)) {
+            JSONObject settings = new JSONObject(new String(readAll(input), StandardCharsets.UTF_8));
+            if (!settings.has("base_url")) settings.put("base_url", "");
+            if (!settings.has("model") || settings.optString("model", "").trim().isEmpty()) {
+                settings.put("model", "deepseek-v4-pro");
+            }
+            if (!settings.has("api_key")) settings.put("api_key", "");
+            return settings;
+        } catch (Exception error) {
+            return defaultSettings();
+        }
+    }
+
+    private JSONObject defaultSettings() {
+        JSONObject settings = new JSONObject();
+        try {
+            settings.put("base_url", "");
+            settings.put("model", "deepseek-v4-pro");
+            settings.put("api_key", "");
+        } catch (Exception ignored) {
+        }
+        return settings;
+    }
+
+    private void writeLocalSettings(JSONObject settings) throws IOException {
+        writeText(settingsFile(), settings.toString());
+    }
+
+    private String openAiChatCompletionsUrl(String baseUrl) {
+        String base = baseUrl == null ? "" : baseUrl.trim();
+        if (base.isEmpty()) base = "https://api.openai.com/v1";
+        while (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+        if (base.endsWith("/chat/completions")) return base;
+        return base + "/chat/completions";
+    }
+
     private JSONObject readLocalSong(String rawName) throws Exception {
         String name = cleanSongName(rawName);
         if (name.isEmpty()) throw new IOException("Song name is required");
@@ -775,10 +883,19 @@ public class MainActivity extends Activity {
     }
 
     private HttpResult httpRequest(String method, String urlText, String body) throws IOException {
+        return httpRequest(method, urlText, body, null);
+    }
+
+    private HttpResult httpRequest(String method, String urlText, String body, Map<String, String> extraHeaders) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(urlText).openConnection();
         connection.setConnectTimeout(1500);
         connection.setReadTimeout(8000);
         connection.setRequestProperty("User-Agent", "utapractice-android");
+        if (extraHeaders != null) {
+            for (Map.Entry<String, String> entry : extraHeaders.entrySet()) {
+                connection.setRequestProperty(entry.getKey(), entry.getValue());
+            }
+        }
         connection.setRequestMethod(method);
         if (!"GET".equals(method)) {
             byte[] bytes = (body == null ? "" : body).getBytes(StandardCharsets.UTF_8);
@@ -960,6 +1077,10 @@ public class MainActivity extends Activity {
 
     private File songsListFile() {
         return new File(cacheDir("cache"), "songs.json");
+    }
+
+    private File settingsFile() {
+        return new File(cacheDir("config"), "settings.local.json");
     }
 
     private File songJsonFile(String name) {
