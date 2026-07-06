@@ -2,12 +2,16 @@ package com.utapractice.app;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.ContentResolver;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.database.Cursor;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.OpenableColumns;
 import android.util.Base64;
 import android.view.View;
 import android.view.Window;
@@ -29,12 +33,15 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final String APP_ORIGIN = "https://utapractice.local";
@@ -43,9 +50,13 @@ public class MainActivity extends Activity {
     private static final String KEY_SERVER_URL = "server_url";
     private static final String KEY_CLOUD_CONFIG_URL = "cloud_config_url";
     private static final String KEY_LAST_SYNC = "last_sync";
+    private static final int REQUEST_IMPORT_AUDIO = 4101;
+    private static final int REQUEST_IMPORT_LYRICS = 4102;
 
     private WebView webView;
     private SharedPreferences prefs;
+    private String pendingImportSongName = "";
+    private String pendingImportKind = "";
 
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
     @Override
@@ -120,7 +131,7 @@ public class MainActivity extends Activity {
         String method = request.getMethod() == null ? "GET" : request.getMethod().toUpperCase();
         String pathAndQuery = uri.getEncodedPath() + (uri.getEncodedQuery() == null ? "" : "?" + uri.getEncodedQuery());
         if (!"GET".equals(method)) {
-            return jsonResponse(503, "{\"error\":\"APK 离线壳暂不支持这个写操作；请在网页端执行\"}");
+            return jsonResponse(405, "{\"error\":\"APK 本地写入请通过 Android Bridge 提交\"}");
         }
 
         try {
@@ -140,8 +151,8 @@ public class MainActivity extends Activity {
     private WebResourceResponse cachedFirstResponse(WebResourceRequest request) throws IOException {
         Uri uri = request.getUrl();
         String path = uri.getPath();
-        if ("/api/songs".equals(path) && songsListFile().exists()) {
-            return fileResponse("application/json", songsListFile());
+        if ("/api/songs".equals(path)) {
+            return jsonResponse(200, localSongsListJson().toString());
         }
 
         String audioPrefix = "/api/songs/";
@@ -179,8 +190,8 @@ public class MainActivity extends Activity {
         Uri uri = request.getUrl();
         String path = uri.getPath();
         try {
-            if ("/api/songs".equals(path) && songsListFile().exists()) {
-                return fileResponse("application/json", songsListFile());
+            if ("/api/songs".equals(path)) {
+                return jsonResponse(200, localSongsListJson().toString());
             }
             if ("/api/settings".equals(path)) {
                 return jsonResponse(200, "{\"base_url\":\"\",\"model\":\"\",\"has_api_key\":false}");
@@ -197,14 +208,14 @@ public class MainActivity extends Activity {
                 String name = Uri.decode(path.substring(audioPrefix.length(), path.length() - "/audio".length()));
                 File audio = audioFile(name);
                 if (audio.exists()) return audioFileResponse(audioMimeFile(name), audio, request);
-                return jsonResponse(404, "{\"error\":\"这首歌没有离线音频，请先同步\"}");
+                return jsonResponse(404, "{\"error\":\"这首歌没有本地音频，请先导入或同步\"}");
             }
 
             if (path != null && path.startsWith(audioPrefix)) {
                 String name = Uri.decode(path.substring(audioPrefix.length()));
                 File song = songJsonFile(name);
                 if (song.exists()) return fileResponse("application/json", song);
-                return jsonResponse(404, "{\"error\":\"这首歌没有离线缓存，请先同步\"}");
+                return jsonResponse(404, "{\"error\":\"本地歌库没有这首歌\"}");
             }
         } catch (Exception error) {
             return jsonResponse(500, "{\"error\":\"读取 APK 离线缓存失败\"}");
@@ -213,6 +224,20 @@ public class MainActivity extends Activity {
     }
 
     private class AndroidBridge {
+        @JavascriptInterface
+        public String apiRequest(String method, String path, String body) {
+            try {
+                String apiPath = apiPath(path);
+                if (isLocalPostPath(apiPath)) {
+                    JSONObject result = handleLocalPost(method, apiPath, body);
+                    return result.toString();
+                }
+                return proxyJsonRequest(method, apiPath, body);
+            } catch (Exception error) {
+                return errorJson(error.getMessage()).toString();
+            }
+        }
+
         @JavascriptInterface
         public String getServerUrl() {
             return serverUrl();
@@ -280,6 +305,418 @@ public class MainActivity extends Activity {
                 }
             }).start();
         }
+
+        @JavascriptInterface
+        public void chooseAudioForSong(String songName) {
+            openImportPicker("audio", cleanSongName(songName), REQUEST_IMPORT_AUDIO, "audio/*");
+        }
+
+        @JavascriptInterface
+        public void chooseLyricsForSong(String songName) {
+            openImportPicker("lyrics", cleanSongName(songName), REQUEST_IMPORT_LYRICS, "*/*");
+        }
+    }
+
+    private JSONObject handleLocalPost(String method, String rawPath, String body) throws Exception {
+        String normalizedMethod = method == null ? "GET" : method.trim().toUpperCase();
+        if (!"POST".equals(normalizedMethod)) throw new IOException("APK 本地版暂不支持这个写方法");
+
+        String path = apiPath(rawPath);
+        String songPrefix = "/api/songs/";
+        if (path.startsWith(songPrefix) && path.endsWith("/meta")) {
+            String name = Uri.decode(path.substring(songPrefix.length(), path.length() - "/meta".length()));
+            return handleMetaPost(name, new JSONObject(emptyJsonObject(body)));
+        }
+        if (path.startsWith(songPrefix) && path.endsWith("/lyrics")) {
+            String name = Uri.decode(path.substring(songPrefix.length(), path.length() - "/lyrics".length()));
+            return handleLyricsPost(name, new JSONArray(emptyJsonArray(body)));
+        }
+        if (path.startsWith(songPrefix) && path.endsWith("/delete")) {
+            String name = Uri.decode(path.substring(songPrefix.length(), path.length() - "/delete".length()));
+            return handleDeletePost(name);
+        }
+        if ("/api/upload/lyrics-text".equals(path)) {
+            return handleLyricsTextPost(new JSONObject(emptyJsonObject(body)));
+        }
+        throw new IOException("APK 本地版暂不支持这个接口");
+    }
+
+    private boolean isLocalPostPath(String path) {
+        String songPrefix = "/api/songs/";
+        return path != null && (
+            "/api/upload/lyrics-text".equals(path)
+                || path.startsWith(songPrefix) && (
+                    path.endsWith("/meta")
+                        || path.endsWith("/lyrics")
+                        || path.endsWith("/delete")
+                )
+        );
+    }
+
+    private String proxyJsonRequest(String method, String path, String body) throws IOException {
+        String normalizedMethod = method == null ? "GET" : method.trim().toUpperCase();
+        return new String(httpRequest(normalizedMethod, serverUrl() + path, body).bytes, StandardCharsets.UTF_8);
+    }
+
+    private JSONObject handleMetaPost(String name, JSONObject payload) throws Exception {
+        JSONObject detail = readLocalSong(cleanSongName(name));
+        if (payload.has("saved_key")) detail.put("saved_key", payload.optInt("saved_key", 0));
+        if (payload.has("range")) detail.put("range", payload.optString("range", ""));
+        if (payload.has("learned")) detail.put("learned", payload.optBoolean("learned", false));
+        upsertLocalSong(detail);
+
+        JSONObject info = new JSONObject();
+        info.put("saved_key", detail.optInt("saved_key", 0));
+        info.put("range", detail.optString("range", ""));
+        info.put("learned", detail.optBoolean("learned", false));
+        JSONObject result = new JSONObject();
+        result.put("ok", true);
+        result.put("info", info);
+        return result;
+    }
+
+    private JSONObject handleLyricsPost(String name, JSONArray lyrics) throws Exception {
+        JSONObject detail = readLocalSong(cleanSongName(name));
+        detail.put("lyrics", lyrics);
+        detail.put("has_lyrics", true);
+        detail.put("lyrics_type", "json");
+        upsertLocalSong(detail);
+
+        JSONObject result = new JSONObject();
+        result.put("ok", true);
+        result.put("song_name", detail.optString("name", name));
+        result.put("lines", lyrics.length());
+        return result;
+    }
+
+    private JSONObject handleLyricsTextPost(JSONObject payload) throws Exception {
+        String targetSong = cleanSongName(payload.optString("target_song", ""));
+        String songName = targetSong.isEmpty() ? cleanSongName(payload.optString("song_name", "")) : targetSong;
+        String lyricsText = payload.optString("lyrics_text", "").trim();
+        String lyricsType = payload.optString("lyrics_type", "lrc").trim().toLowerCase();
+        if (songName.isEmpty()) throw new IOException("Song name is required");
+        if (lyricsText.isEmpty()) throw new IOException("Lyrics text is required");
+        if (!"lrc".equals(lyricsType) && !"json".equals(lyricsType)) throw new IOException("Lyrics type must be lrc or json");
+
+        JSONObject detail = readLocalSong(songName);
+        if (targetSong.length() > 0 && !detail.optBoolean("has_audio", false)) {
+            throw new IOException("Target song has no audio");
+        }
+        if (detail.optBoolean("has_lyrics", false)) {
+            throw new IOException("Target song already has lyrics");
+        }
+
+        JSONArray lyrics = "json".equals(lyricsType) ? new JSONArray(lyricsText) : parseLrc(lyricsText);
+        if (!"json".equals(lyricsType) && lyrics.length() == 0) {
+            throw new IOException("LRC lyrics must include timestamped lines");
+        }
+        detail.put("lyrics", lyrics);
+        detail.put("has_lyrics", true);
+        detail.put("lyrics_type", lyricsType);
+        upsertLocalSong(detail);
+
+        JSONObject result = new JSONObject();
+        result.put("ok", true);
+        result.put("song_name", songName);
+        result.put("saved", songName + "." + lyricsType);
+        result.put("lines", lyrics.length());
+        return result;
+    }
+
+    private JSONObject handleDeletePost(String name) throws Exception {
+        String songName = cleanSongName(name);
+        if (songName.isEmpty()) throw new IOException("Song name is required");
+        deleteIfExists(songJsonFile(songName));
+        deleteIfExists(audioFile(songName));
+        deleteIfExists(audioMimeSidecar(songName));
+
+        JSONArray songs = localSongsListJson();
+        JSONArray next = new JSONArray();
+        for (int index = 0; index < songs.length(); index++) {
+            JSONObject song = songs.optJSONObject(index);
+            if (song == null || songName.equals(song.optString("name", ""))) continue;
+            next.put(song);
+        }
+        writeSongsListJson(next);
+        JSONObject result = new JSONObject();
+        result.put("ok", true);
+        return result;
+    }
+
+    private void openImportPicker(String kind, String songName, int requestCode, String mimeType) {
+        pendingImportKind = kind;
+        pendingImportSongName = songName;
+        runOnUiThread(() -> {
+            try {
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType(mimeType);
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivityForResult(intent, requestCode);
+                emitImport(kind, "selecting", "请选择文件");
+            } catch (Exception error) {
+                emitImport(kind, "failed", "打开文件选择器失败：" + error.getMessage());
+            }
+        });
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_IMPORT_AUDIO && requestCode != REQUEST_IMPORT_LYRICS) return;
+        String kind = requestCode == REQUEST_IMPORT_AUDIO ? "audio" : "lyrics";
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            emitImport(kind, "cancelled", "已取消选择");
+            return;
+        }
+        handlePickedImportFile(kind, data.getData(), pendingImportSongName);
+    }
+
+    private void handlePickedImportFile(String kind, Uri uri, String requestedSongName) {
+        new Thread(() -> {
+            try {
+                String displayName = displayNameForUri(uri);
+                String fallbackName = cleanSongName(stemName(displayName));
+                String songName = cleanSongName(requestedSongName);
+                if (songName.isEmpty()) songName = fallbackName;
+                if (songName.isEmpty()) throw new IOException("无法从文件名识别歌曲名");
+
+                if ("audio".equals(kind)) {
+                    importAudioUri(uri, songName);
+                } else {
+                    importLyricsUri(uri, songName, displayName);
+                }
+                emitImport(kind, "done", "已导入：" + songName);
+            } catch (Exception error) {
+                emitImport(kind, "failed", "导入失败：" + error.getMessage());
+            }
+        }).start();
+    }
+
+    private void importAudioUri(Uri uri, String songName) throws Exception {
+        JSONObject detail = readLocalSong(songName);
+        if (detail.optBoolean("has_audio", false)) throw new IOException("Target song already has audio");
+        try (InputStream input = getContentResolver().openInputStream(uri)) {
+            if (input == null) throw new IOException("无法读取音频文件");
+            writeStream(audioFile(songName), input);
+        }
+        String mime = getContentResolver().getType(uri);
+        writeText(audioMimeSidecar(songName), mime == null || mime.trim().isEmpty() ? "audio/mpeg" : mime);
+        detail.put("has_audio", true);
+        upsertLocalSong(detail);
+    }
+
+    private void importLyricsUri(Uri uri, String songName, String displayName) throws Exception {
+        JSONObject detail = readLocalSong(songName);
+        if (detail.optBoolean("has_lyrics", false)) throw new IOException("Target song already has lyrics");
+        String raw;
+        try (InputStream input = getContentResolver().openInputStream(uri)) {
+            if (input == null) throw new IOException("无法读取歌词文件");
+            raw = new String(readAll(input), StandardCharsets.UTF_8).trim();
+        }
+        String lowerName = displayName == null ? "" : displayName.toLowerCase();
+        String lyricsType = lowerName.endsWith(".json") ? "json" : "lrc";
+        JSONArray lyrics = "json".equals(lyricsType) ? new JSONArray(raw) : parseLrc(raw);
+        if (!"json".equals(lyricsType) && lyrics.length() == 0) {
+            throw new IOException("LRC lyrics must include timestamped lines");
+        }
+        detail.put("lyrics", lyrics);
+        detail.put("has_lyrics", true);
+        detail.put("lyrics_type", lyricsType);
+        upsertLocalSong(detail);
+    }
+
+    private JSONObject errorJson(String message) {
+        JSONObject result = new JSONObject();
+        try {
+            result.put("ok", false);
+            result.put("error", message == null || message.trim().isEmpty() ? "APK 本地操作失败" : message);
+        } catch (Exception ignored) {
+        }
+        return result;
+    }
+
+    private String apiPath(String value) {
+        String text = value == null ? "" : value.trim();
+        if (text.startsWith("http://") || text.startsWith("https://")) {
+            Uri uri = Uri.parse(text);
+            text = uri.getEncodedPath();
+        }
+        int queryIndex = text.indexOf('?');
+        if (queryIndex >= 0) text = text.substring(0, queryIndex);
+        return text.startsWith("/") ? text : "/" + text;
+    }
+
+    private String emptyJsonObject(String value) {
+        String text = value == null ? "" : value.trim();
+        return text.isEmpty() ? "{}" : text;
+    }
+
+    private String emptyJsonArray(String value) {
+        String text = value == null ? "" : value.trim();
+        return text.isEmpty() ? "[]" : text;
+    }
+
+    private JSONArray localSongsListJson() {
+        File file = songsListFile();
+        if (!file.exists()) return new JSONArray();
+        try (InputStream input = new FileInputStream(file)) {
+            String raw = new String(readAll(input), StandardCharsets.UTF_8);
+            return new JSONArray(raw);
+        } catch (Exception error) {
+            return new JSONArray();
+        }
+    }
+
+    private void writeSongsListJson(JSONArray songs) throws IOException {
+        writeText(songsListFile(), songs.toString());
+    }
+
+    private JSONObject readLocalSong(String rawName) throws Exception {
+        String name = cleanSongName(rawName);
+        if (name.isEmpty()) throw new IOException("Song name is required");
+        File file = songJsonFile(name);
+        JSONObject detail;
+        if (file.exists()) {
+            try (InputStream input = new FileInputStream(file)) {
+                detail = new JSONObject(new String(readAll(input), StandardCharsets.UTF_8));
+            }
+        } else {
+            detail = new JSONObject();
+        }
+        detail.put("name", name);
+        if (!detail.has("lyrics")) detail.put("lyrics", new JSONArray());
+        if (!detail.has("learned")) detail.put("learned", false);
+        if (!detail.has("range")) detail.put("range", "");
+        if (!detail.has("saved_key")) detail.put("saved_key", 0);
+        detail.put("has_audio", detail.optBoolean("has_audio", false) || audioFile(name).exists());
+        detail.put("has_lyrics", detail.optBoolean("has_lyrics", false) || detail.optJSONArray("lyrics") != null && detail.optJSONArray("lyrics").length() > 0);
+        if (!detail.optBoolean("has_lyrics", false)) detail.put("lyrics_type", JSONObject.NULL);
+        return detail;
+    }
+
+    private void upsertLocalSong(JSONObject detail) throws Exception {
+        String name = cleanSongName(detail.optString("name", ""));
+        if (name.isEmpty()) throw new IOException("Song name is required");
+        detail.put("name", name);
+        detail.put("has_audio", detail.optBoolean("has_audio", false) || audioFile(name).exists());
+        if (!detail.has("lyrics")) detail.put("lyrics", new JSONArray());
+        JSONArray lyrics = detail.optJSONArray("lyrics");
+        detail.put("has_lyrics", detail.optBoolean("has_lyrics", false) || lyrics != null && lyrics.length() > 0);
+        if (!detail.optBoolean("has_lyrics", false)) detail.put("lyrics_type", JSONObject.NULL);
+        writeText(songJsonFile(name), detail.toString());
+
+        JSONArray songs = localSongsListJson();
+        JSONArray next = new JSONArray();
+        boolean replaced = false;
+        JSONObject summary = songSummary(detail);
+        for (int index = 0; index < songs.length(); index++) {
+            JSONObject existing = songs.optJSONObject(index);
+            if (existing == null) continue;
+            if (name.equals(existing.optString("name", ""))) {
+                next.put(summary);
+                replaced = true;
+            } else {
+                next.put(existing);
+            }
+        }
+        if (!replaced) next.put(summary);
+        writeSongsListJson(next);
+    }
+
+    private JSONObject songSummary(JSONObject detail) throws Exception {
+        JSONObject summary = new JSONObject();
+        summary.put("name", detail.optString("name", ""));
+        summary.put("has_audio", detail.optBoolean("has_audio", false));
+        summary.put("has_lyrics", detail.optBoolean("has_lyrics", false));
+        summary.put("lyrics_type", detail.optBoolean("has_lyrics", false) ? detail.optString("lyrics_type", "json") : JSONObject.NULL);
+        summary.put("learned", detail.optBoolean("learned", false));
+        summary.put("range", detail.optString("range", ""));
+        summary.put("saved_key", detail.optInt("saved_key", 0));
+        return summary;
+    }
+
+    private JSONArray parseLrc(String text) throws Exception {
+        JSONArray lines = new JSONArray();
+        Pattern pattern = Pattern.compile("\\[(\\d{1,2}):(\\d{2})(?:[.:](\\d{1,3}))?\\]");
+        String[] rawLines = text == null ? new String[0] : text.split("\\r?\\n");
+        for (String rawLine : rawLines) {
+            Matcher matcher = pattern.matcher(rawLine);
+            JSONArray times = new JSONArray();
+            while (matcher.find()) {
+                int minutes = Integer.parseInt(matcher.group(1));
+                int seconds = Integer.parseInt(matcher.group(2));
+                String fraction = matcher.group(3) == null ? "0" : matcher.group(3);
+                double fractionSeconds = Integer.parseInt(fraction) / (fraction.length() == 3 ? 1000.0 : 100.0);
+                times.put(Math.round((minutes * 60 + seconds + fractionSeconds) * 1000.0) / 1000.0);
+            }
+            if (times.length() == 0) continue;
+            String lyric = pattern.matcher(rawLine).replaceAll("").trim();
+            for (int index = 0; index < times.length(); index++) {
+                JSONObject line = new JSONObject();
+                line.put("time", times.getDouble(index));
+                line.put("original_html", lyric);
+                line.put("translation", "");
+                lines.put(line);
+            }
+        }
+        return sortLyricsByTime(lines);
+    }
+
+    private JSONArray sortLyricsByTime(JSONArray source) throws Exception {
+        JSONArray sorted = new JSONArray();
+        for (int sourceIndex = 0; sourceIndex < source.length(); sourceIndex++) {
+            JSONObject line = source.getJSONObject(sourceIndex);
+            int insertAt = sorted.length();
+            for (int sortedIndex = 0; sortedIndex < sorted.length(); sortedIndex++) {
+                if (line.optDouble("time", 0) < sorted.getJSONObject(sortedIndex).optDouble("time", 0)) {
+                    insertAt = sortedIndex;
+                    break;
+                }
+            }
+            JSONArray next = new JSONArray();
+            for (int index = 0; index < insertAt; index++) next.put(sorted.getJSONObject(index));
+            next.put(line);
+            for (int index = insertAt; index < sorted.length(); index++) next.put(sorted.getJSONObject(index));
+            sorted = next;
+        }
+        return sorted;
+    }
+
+    private String displayNameForUri(Uri uri) {
+        String name = null;
+        if (ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
+            try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                    if (index >= 0) name = cursor.getString(index);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        if (name == null || name.trim().isEmpty()) name = uri.getLastPathSegment();
+        return name == null ? "untitled" : name;
+    }
+
+    private String stemName(String filename) {
+        String name = filename == null ? "" : filename.trim();
+        int slash = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+        if (slash >= 0) name = name.substring(slash + 1);
+        int dot = name.lastIndexOf('.');
+        if (dot > 0) name = name.substring(0, dot);
+        return name;
+    }
+
+    private String cleanSongName(String value) {
+        String text = value == null ? "" : value.trim();
+        text = text.replace('\r', ' ').replace('\n', ' ').replace('\t', ' ');
+        text = text.replace('/', '／').replace('\\', '＼');
+        while (text.contains("  ")) text = text.replace("  ", " ");
+        return text.trim();
+    }
+
+    private void deleteIfExists(File file) throws IOException {
+        if (file.exists() && !file.delete()) throw new IOException("删除本地文件失败：" + file.getName());
     }
 
     private void syncSong(String name) throws Exception {
@@ -309,6 +746,20 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void emitImport(String kind, String status, String message) {
+        try {
+            JSONObject detail = new JSONObject();
+            detail.put("channel", "import");
+            detail.put("kind", kind);
+            detail.put("status", status);
+            detail.put("progress", "done".equals(status) ? 100 : 0);
+            detail.put("message", message);
+            String script = "window.dispatchEvent(new CustomEvent('utapractice-android', { detail: " + detail + " }));";
+            runOnUiThread(() -> webView.evaluateJavascript(script, null));
+        } catch (Exception ignored) {
+        }
+    }
+
     private String serverUrl() {
         return cleanUrl(prefs.getString(KEY_SERVER_URL, DEFAULT_SERVER_URL));
     }
@@ -320,15 +771,34 @@ public class MainActivity extends Activity {
     }
 
     private HttpResult httpGet(String urlText) throws IOException {
+        return httpRequest("GET", urlText, null);
+    }
+
+    private HttpResult httpRequest(String method, String urlText, String body) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(urlText).openConnection();
         connection.setConnectTimeout(1500);
         connection.setReadTimeout(8000);
         connection.setRequestProperty("User-Agent", "utapractice-android");
+        connection.setRequestMethod(method);
+        if (!"GET".equals(method)) {
+            byte[] bytes = (body == null ? "" : body).getBytes(StandardCharsets.UTF_8);
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json");
+            connection.setRequestProperty("Content-Length", String.valueOf(bytes.length));
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(bytes);
+            }
+        }
         int status = connection.getResponseCode();
-        if (status < 200 || status >= 300) throw new IOException("HTTP " + status);
         String contentType = connection.getContentType();
-        try (InputStream input = connection.getInputStream()) {
-            return new HttpResult(readAll(input), contentType);
+        InputStream stream = status >= 200 && status < 300 ? connection.getInputStream() : connection.getErrorStream();
+        try (InputStream input = stream == null ? new ByteArrayInputStream(new byte[0]) : stream) {
+            byte[] bytes = readAll(input);
+            if (status < 200 || status >= 300) {
+                String text = new String(bytes, StandardCharsets.UTF_8).trim();
+                throw new IOException(text.isEmpty() ? "HTTP " + status : text);
+            }
+            return new HttpResult(bytes, contentType);
         } finally {
             connection.disconnect();
         }
@@ -523,6 +993,16 @@ public class MainActivity extends Activity {
         if (parent != null && !parent.exists()) parent.mkdirs();
         try (FileOutputStream output = new FileOutputStream(file)) {
             output.write(bytes);
+        }
+    }
+
+    private void writeStream(File file, InputStream input) throws IOException {
+        File parent = file.getParentFile();
+        if (parent != null && !parent.exists()) parent.mkdirs();
+        try (FileOutputStream output = new FileOutputStream(file)) {
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
         }
     }
 

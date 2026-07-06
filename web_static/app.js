@@ -144,12 +144,35 @@ function formatDuration(seconds) {
 }
 
 async function requestJson(url, options = {}) {
+  if (shouldUseAndroidBridgeRequest(url, options)) {
+    return androidBridgeRequestJson(url, options);
+  }
+
   const response = await fetch(url, {
     headers: options.body instanceof FormData ? options.headers || {} : { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || "请求失败");
+  return payload;
+}
+
+function shouldUseAndroidBridgeRequest(url, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  return hasAndroidBridge() && method !== "GET" && !(options.body instanceof FormData);
+}
+
+function androidApiPath(url) {
+  const parsed = new URL(url, window.location.origin);
+  return `${parsed.pathname}${parsed.search}`;
+}
+
+async function androidBridgeRequestJson(url, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const body = options.body == null ? "" : String(options.body);
+  const raw = window.UtaPracticeAndroid.apiRequest(method, androidApiPath(url), body);
+  const payload = JSON.parse(raw || "{}");
+  if (payload.error) throw new Error(payload.error);
   return payload;
 }
 
@@ -175,6 +198,8 @@ function setApkSyncProgress(progress) {
 function initAndroidBridge() {
   if (!hasAndroidBridge()) return;
   document.documentElement.classList.add("android-shell");
+  if (els.audioUploadButton) els.audioUploadButton.textContent = "导入音频到本机";
+  if (els.lyricsUploadButton) els.lyricsUploadButton.textContent = "导入歌词到本机";
   if (!els.apkSyncPanel) return;
   els.apkSyncPanel.hidden = false;
   try {
@@ -190,6 +215,17 @@ window.addEventListener("utapractice-android", async (event) => {
   if (!els.apkSyncStatus) return;
   els.apkSyncStatus.textContent = detail.message || "";
   setApkSyncProgress(detail.progress || 0);
+  if (detail.channel === "import") {
+    const isLyrics = detail.kind === "lyrics";
+    const statusEl = isLyrics ? els.lyricsUploadStatus : els.audioUploadStatus;
+    const button = isLyrics ? els.lyricsUploadButton : els.audioUploadButton;
+    const level = detail.status === "done" ? "success" : detail.status === "failed" ? "error" : "";
+    setUploadStatus(statusEl, detail.message || "", level);
+    if (["done", "failed", "cancelled"].includes(detail.status)) {
+      if (button) button.disabled = false;
+      await loadSongs().catch(() => {});
+    }
+  }
   if (detail.channel === "cloud" && detail.status === "done" && detail.serverUrl) {
     els.apkServerUrl.value = detail.serverUrl;
   }
@@ -660,7 +696,22 @@ async function uploadFiles({ input, fieldName, url, statusEl, button, formFields
   }
 }
 
+function importAndroidAudioFile() {
+  const targetSong = els.audioTargetSongSelect?.value || "";
+  if (!hasAndroidBridge()) return false;
+  if (els.audioUploadButton) els.audioUploadButton.disabled = true;
+  setUploadStatus(els.audioUploadStatus, targetSong ? `请选择要绑定到「${targetSong}」的音频` : "请选择要导入的音频");
+  try {
+    window.UtaPracticeAndroid.chooseAudioForSong(targetSong);
+  } catch (error) {
+    if (els.audioUploadButton) els.audioUploadButton.disabled = false;
+    setUploadStatus(els.audioUploadStatus, error.message, "error");
+  }
+  return true;
+}
+
 async function uploadAudioFiles() {
+  if (importAndroidAudioFile()) return;
   const files = Array.from(els.audioUploadInput?.files || []);
   const target_song = els.audioTargetSongSelect?.value || "";
   if (target_song && files.length !== 1) {
@@ -678,7 +729,24 @@ async function uploadAudioFiles() {
   });
 }
 
+function importAndroidLyricsFile() {
+  const targetSong = els.lyricsTargetSongSelect?.value || "";
+  const songName = els.lyricsSongNameInput?.value.trim() || "";
+  if (!hasAndroidBridge()) return false;
+  if (els.lyricsUploadButton) els.lyricsUploadButton.disabled = true;
+  const label = targetSong || songName;
+  setUploadStatus(els.lyricsUploadStatus, label ? `请选择要导入到「${label}」的歌词` : "请选择要导入的歌词");
+  try {
+    window.UtaPracticeAndroid.chooseLyricsForSong(targetSong || songName);
+  } catch (error) {
+    if (els.lyricsUploadButton) els.lyricsUploadButton.disabled = false;
+    setUploadStatus(els.lyricsUploadStatus, error.message, "error");
+  }
+  return true;
+}
+
 async function uploadLyricsFiles() {
+  if (importAndroidLyricsFile()) return;
   const files = Array.from(els.lyricsUploadInput?.files || []);
   const target_song = els.lyricsTargetSongSelect?.value || "";
   const song_name = els.lyricsSongNameInput?.value.trim() || "";

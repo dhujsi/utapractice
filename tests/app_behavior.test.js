@@ -115,3 +115,27 @@ test("legacy lyric conversion jobs are labeled as already published", () => {
   assert.match(appJs, /旧版任务已直接写入正式歌词/);
   assert.match(appJs, /job\.type !== "generate_ruby_from_rows"/);
 });
+
+test("APK implements local-first JSON write API through Android bridge", () => {
+  assert.match(androidMain, /apiRequest\(String method, String path, String body\)/);
+  assert.match(androidMain, /handleLocalPost\(/);
+  assert.match(androidMain, /handleMetaPost\(/);
+  assert.match(androidMain, /handleLyricsPost\(/);
+  assert.match(androidMain, /handleLyricsTextPost\(/);
+  assert.match(androidMain, /localSongsListJson\(/);
+  assert.match(androidMain, /upsertLocalSong\(/);
+  assert.doesNotMatch(androidMain, /APK 离线壳暂不支持这个写操作；请在网页端执行/);
+  assert.match(appJs, /androidBridgeRequestJson\(/);
+  assert.match(appJs, /window\.UtaPracticeAndroid\.apiRequest/);
+});
+
+test("APK exposes Android file import bridge for local audio and lyrics", () => {
+  assert.match(androidMain, /chooseAudioForSong\(String songName\)/);
+  assert.match(androidMain, /chooseLyricsForSong\(String songName\)/);
+  assert.match(androidMain, /ACTION_OPEN_DOCUMENT/);
+  assert.match(androidMain, /handlePickedImportFile\(/);
+  assert.match(appJs, /importAndroidAudioFile\(/);
+  assert.match(appJs, /importAndroidLyricsFile\(/);
+  assert.match(appJs, /chooseAudioForSong/);
+  assert.match(appJs, /chooseLyricsForSong/);
+});

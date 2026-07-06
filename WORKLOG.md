@@ -19,3 +19,13 @@
 - 歌词文件上传新增“关联已有歌曲”和新歌名字段，支持把任意文件名歌词匹配到已有歌曲。
 - 移动端侧栏切换“练习/歌库/生成歌词”不再自动收回，仅“载入练习”这种明确进入主播放区的动作会收回。
 - 已构建包含本次 Web UI 的调试 APK：`dist/utapractice-lyrics-input-debug.apk`。
+
+## 2026-07-06
+
+- 明确 APK 架构方向：APK 是本地完备应用，和 Web 端共用同一套 UI；服务器同步是附加能力，不是可用前提。
+- 新增 `docs/apk-local-backend.md`，记录后续维护约束：共享 Web UI、Flask 与 Android 实现同一 `/api/...` 合约、Android Bridge 只处理平台能力和 JSON 写入桥接。
+- 新增 APK 本地 JSON 写入桥：共享前端在 APK 环境下通过 `window.UtaPracticeAndroid.apiRequest()` 提交非 GET JSON 请求。
+- Android 本地后端支持保存学习状态、音域备注、默认 Key、JSON 歌词编辑结果、粘贴 LRC/JSON 歌词和本地删除歌曲。
+- APK 本地歌库从空库可用：`/api/songs` 无服务器时返回本机列表或 `[]`，不再隐式依赖默认服务器。
+- APK 新增 Android 文件选择导入桥：`chooseAudioForSong()` 和 `chooseLyricsForSong()` 可把音频/歌词复制到 App 私有目录并更新本地歌库。
+- 共享前端在 APK 环境下把“上传音频/歌词”切换为“导入到本机”，导入完成后刷新歌库。
