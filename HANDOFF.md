@@ -19,10 +19,13 @@
 - 歌库上传区现在需要先选择文件再点上传；音频可选择一个“已有歌词但无音频”的目标，把任意文件名音频保存为目标歌词同名音频。
 - 歌库歌词区支持两条入库路径：文件上传或直接粘贴 LRC/JSON；两者都可以匹配“已有音频但无歌词”的歌曲。
 - 移动端侧栏切换页面时保持打开，只有从歌库点击“载入练习”进入主播放区时主动收回。
+- 移动端侧栏打开时会显示遮罩，点侧栏外只收起侧栏，不会穿透点到播放器；toast 不再阻挡后续按钮点击。
+- 歌词显示模式只保留“原文 + 译文”和“仅原文”，假名标注由独立开关控制；备注字段前端显示为“备注”。
+- APK 可选同步区已移除“读取云端”入口，避免和本地完备使用目标冲突。
 
 ## 验证
 
-- 已通过：`node --test tests/app_behavior.test.js`，19 个行为测试通过，覆盖 APK 本地 JSON 写入桥、Android 文件导入桥、本地接口设置、无硬编码同步服务器、本地生成工作源和 LRCLIB 本地搜索/预览。
+- 已通过：`node --test tests/app_behavior.test.js`，23 个行为测试通过，覆盖 APK 本地 JSON 写入桥、Android 文件导入桥、本地接口设置、无硬编码同步服务器、本地生成工作源、LRCLIB 本地搜索/预览、移动端侧栏遮罩、toast 点击穿透和假名标注开关。
 - 已通过：`node --check web_static/app.js`
 - 已通过：`python3 -m py_compile web_app.py`
 - 已通过：`cd android && ANDROID_HOME=/home/er/android-sdk bash ./gradlew assembleDebug`

@@ -7,6 +7,7 @@ const state = {
   displayMode: "both",
   align: "center",
   activeLine: null,
+  showRuby: true,
   ab: { a: null, b: null },
   workspace: {
     results: [],
@@ -17,6 +18,7 @@ const state = {
 };
 
 const els = {
+  appShell: document.getElementById("appShell"),
   songSelect: document.getElementById("songSelect"),
   librarySongSelect: document.getElementById("librarySongSelect"),
   librarySongInfo: document.getElementById("librarySongInfo"),
@@ -28,9 +30,7 @@ const els = {
   songPanel: document.getElementById("songPanel"),
   settingsPanel: document.getElementById("settingsPanel"),
   apkSyncPanel: document.getElementById("apkSyncPanel"),
-  apkCloudUrl: document.getElementById("apkCloudUrl"),
   apkServerUrl: document.getElementById("apkServerUrl"),
-  apkLoadCloud: document.getElementById("apkLoadCloud"),
   apkSyncAll: document.getElementById("apkSyncAll"),
   apkSyncProgress: document.getElementById("apkSyncProgress"),
   apkSyncStatus: document.getElementById("apkSyncStatus"),
@@ -40,6 +40,7 @@ const els = {
   saveKey: document.getElementById("saveKey"),
   resetKey: document.getElementById("resetKey"),
   displayMode: document.getElementById("displayMode"),
+  rubyToggle: document.getElementById("rubyToggle"),
   alignGroup: document.getElementById("alignGroup"),
   rangeInput: document.getElementById("rangeInput"),
   learnedInput: document.getElementById("learnedInput"),
@@ -110,6 +111,7 @@ const els = {
   toast: document.getElementById("toast"),
   openSidebar: document.getElementById("openSidebar"),
   closeSidebar: document.getElementById("closeSidebar"),
+  sidebarBackdrop: document.getElementById("sidebarBackdrop"),
   sidebar: document.querySelector(".sidebar"),
 };
 
@@ -141,6 +143,14 @@ function formatDuration(seconds) {
   const minutes = Math.floor(total / 60);
   const rest = total % 60;
   return minutes ? `${minutes}分${rest}秒` : `${rest}秒`;
+}
+
+function stripRubyMarkup(value) {
+  const template = document.createElement("template");
+  template.innerHTML = String(value || "");
+  template.content.querySelectorAll("rt, rp").forEach((node) => node.remove());
+  template.content.querySelectorAll("ruby").forEach((node) => node.replaceWith(...node.childNodes));
+  return template.innerHTML;
 }
 
 async function requestJson(url, options = {}) {
@@ -204,7 +214,6 @@ function initAndroidBridge() {
   els.apkSyncPanel.hidden = false;
   try {
     els.apkServerUrl.value = window.UtaPracticeAndroid.getServerUrl?.() || "";
-    els.apkCloudUrl.value = window.UtaPracticeAndroid.getCloudConfigUrl?.() || "";
   } catch {
     els.apkSyncStatus.textContent = "APK 桥接状态读取失败";
   }
@@ -225,12 +234,6 @@ window.addEventListener("utapractice-android", async (event) => {
       if (button) button.disabled = false;
       await loadSongs().catch(() => {});
     }
-  }
-  if (detail.channel === "cloud" && detail.status === "done" && detail.serverUrl) {
-    els.apkServerUrl.value = detail.serverUrl;
-  }
-  if (detail.channel === "cloud" && ["done", "failed"].includes(detail.status)) {
-    els.apkLoadCloud.disabled = false;
   }
   if (detail.channel === "sync" && detail.status === "done") {
     await loadSongs().catch(() => {});
@@ -260,7 +263,20 @@ function isMobileLayout() {
 }
 
 function closeSidebarOnMobile() {
-  if (isMobileLayout()) els.sidebar.classList.remove("open");
+  if (isMobileLayout()) closeSidebar();
+}
+
+function setSidebarOpen(open) {
+  els.sidebar.classList.toggle("open", open);
+  els.appShell.classList.toggle("sidebar-open", open && isMobileLayout());
+}
+
+function openSidebarOnMobile() {
+  setSidebarOpen(true);
+}
+
+function closeSidebar() {
+  setSidebarOpen(false);
 }
 
 function shouldIgnoreSidebarSwipe(target) {
@@ -310,10 +326,10 @@ function onSidebarSwipeEnd(event) {
   }
   const action = sidebarSwipeAction(event.changedTouches[0]);
   if (action === "close") {
-    els.sidebar.classList.remove("open");
+    closeSidebar();
   }
   if (action === "open") {
-    els.sidebar.classList.add("open");
+    openSidebarOnMobile();
   }
   sidebarSwipeStart = null;
 }
@@ -519,10 +535,10 @@ function renderSongSelect() {
 }
 
 function lineText(line) {
-  const original = line.original_html || "";
+  const rawOriginal = line.original_html || "";
+  const original = state.showRuby ? rawOriginal : stripRubyMarkup(rawOriginal);
   const translation = line.translation || "";
   if (state.displayMode === "original") return original || "";
-  if (state.displayMode === "translation") return escapeHtml(translation || "");
   return translation ? `${original}<br><span class="translation-text">${escapeHtml(translation)}</span>` : original;
 }
 
@@ -1386,6 +1402,10 @@ els.displayMode.addEventListener("change", () => {
   state.displayMode = els.displayMode.value;
   renderLyrics();
 });
+els.rubyToggle.addEventListener("change", () => {
+  state.showRuby = els.rubyToggle.checked;
+  renderLyrics();
+});
 els.alignGroup.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-align]");
   if (!button) return;
@@ -1395,20 +1415,6 @@ els.alignGroup.addEventListener("click", (event) => {
 });
 els.rangeInput.addEventListener("change", () => saveMeta({ range: els.rangeInput.value }, "备注已保存"));
 els.learnedInput.addEventListener("change", () => saveMeta({ learned: els.learnedInput.checked }, "状态已保存"));
-if (els.apkLoadCloud) {
-  els.apkLoadCloud.addEventListener("click", () => {
-    if (!hasAndroidBridge()) return;
-    els.apkLoadCloud.disabled = true;
-    els.apkSyncStatus.textContent = "正在读取云端配置...";
-    setApkSyncProgress(0);
-    try {
-      window.UtaPracticeAndroid.loadCloudConfig(els.apkCloudUrl.value);
-    } catch (error) {
-      els.apkSyncStatus.textContent = `读取失败：${error.message}`;
-      els.apkLoadCloud.disabled = false;
-    }
-  });
-}
 if (els.apkSyncAll) {
   els.apkSyncAll.addEventListener("click", () => {
     if (!hasAndroidBridge()) return;
@@ -1551,8 +1557,12 @@ els.generateWorkspaceRuby.addEventListener("click", () => generateWorkspaceRuby(
 els.previewGenerated.addEventListener("click", () => previewGenerated().catch((error) => showToast(error.message)));
 els.publishWorkspace.addEventListener("click", () => publishWorkspace().catch((error) => showToast(error.message)));
 els.refreshJobs.addEventListener("click", () => loadJobs().catch((error) => showToast(error.message)));
-els.openSidebar.addEventListener("click", () => els.sidebar.classList.add("open"));
-els.closeSidebar.addEventListener("click", () => els.sidebar.classList.remove("open"));
+els.openSidebar.addEventListener("click", openSidebarOnMobile);
+els.closeSidebar.addEventListener("click", closeSidebar);
+els.sidebarBackdrop.addEventListener("click", closeSidebar);
+window.addEventListener("resize", () => {
+  if (!isMobileLayout()) closeSidebar();
+});
 document.addEventListener("touchstart", onSidebarSwipeStart, { passive: true });
 document.addEventListener("touchmove", onSidebarSwipeMove, { passive: false });
 document.addEventListener("touchend", onSidebarSwipeEnd, { passive: true });

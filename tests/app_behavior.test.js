@@ -97,8 +97,47 @@ test("mobile sidebar stays open when switching side pages", () => {
   assert.match(appJs, /els\.libraryLoadSong\.addEventListener\("click",[\s\S]*closeSidebarOnMobile\(\)/);
 });
 
+test("mobile sidebar uses a backdrop so player controls do not receive outside taps", () => {
+  assert.match(indexHtml, /id="sidebarBackdrop"/);
+  assert.match(appJs, /sidebarBackdrop: document\.getElementById\("sidebarBackdrop"\)/);
+  assert.match(appJs, /function openSidebarOnMobile\(\)/);
+  assert.match(appJs, /function closeSidebar\(\)/);
+  assert.match(appJs, /els\.appShell\.classList\.toggle\("sidebar-open"/);
+  assert.match(appJs, /els\.sidebarBackdrop\.addEventListener\("click", closeSidebar\)/);
+  assert.match(appCss, /\.sidebar-backdrop/);
+  assert.match(appCss, /\.app-shell\.sidebar-open \.sidebar-backdrop/);
+});
+
+test("toast and touch button feedback do not block immediate follow-up taps", () => {
+  const toastCss = appCss.match(/\.toast\s*\{[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(toastCss, /pointer-events:\s*none/);
+  assert.match(appCss, /@media \(hover: hover\) and \(pointer: fine\)/);
+  assert.match(appCss, /button:disabled/);
+});
+
 test("main web page has exactly one shared audio element", () => {
   assert.equal((indexHtml.match(/id="audio"/g) || []).length, 1);
+});
+
+test("lyrics display has a separate ruby toggle and no translation-only mode", () => {
+  assert.doesNotMatch(indexHtml, /value="translation"/);
+  assert.doesNotMatch(indexHtml, /仅译文/);
+  assert.match(indexHtml, /id="rubyToggle"/);
+  assert.match(indexHtml, /假名标注/);
+  assert.match(indexHtml, />备注<\/span>/);
+  assert.match(appJs, /showRuby: true/);
+  assert.match(appJs, /function stripRubyMarkup\(/);
+  assert.match(appJs, /els\.rubyToggle\.addEventListener\("change"/);
+  assert.doesNotMatch(appJs, /state\.displayMode === "translation"/);
+});
+
+test("APK optional sync panel does not expose cloud config loading", () => {
+  assert.doesNotMatch(indexHtml, /apkCloudUrl/);
+  assert.doesNotMatch(indexHtml, /apkLoadCloud/);
+  assert.doesNotMatch(indexHtml, /读取云端/);
+  assert.doesNotMatch(appJs, /loadCloudConfig/);
+  assert.match(indexHtml, /可选同步后端地址/);
+  assert.match(indexHtml, /id="apkSyncAll"/);
 });
 
 test("completed workspace jobs can reopen generated lyrics for preview and publishing", () => {
