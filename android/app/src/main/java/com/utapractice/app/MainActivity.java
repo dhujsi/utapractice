@@ -45,7 +45,7 @@ import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final String APP_ORIGIN = "https://utapractice.local";
-    private static final String DEFAULT_SERVER_URL = "http://192.168.68.200:8502";
+    private static final String DEFAULT_SERVER_URL = "";
     private static final String PREFS_NAME = "utapractice_apk";
     private static final String KEY_SERVER_URL = "server_url";
     private static final String KEY_CLOUD_CONFIG_URL = "cloud_config_url";
@@ -140,7 +140,9 @@ public class MainActivity extends Activity {
                 return cached;
             }
 
-            byte[] remote = httpGetBytes(serverUrl() + pathAndQuery);
+            String baseUrl = serverUrl();
+            if (baseUrl.isEmpty()) return cachedApiResponse(request);
+            byte[] remote = httpGetBytes(baseUrl + pathAndQuery);
             cacheGetResponse(uri, remote);
             return bytesResponse(mimeForPath(uri.getPath()), remote);
         } catch (Exception ignored) {
@@ -157,19 +159,26 @@ public class MainActivity extends Activity {
         if ("/api/settings".equals(path)) {
             return jsonResponse(200, localSettingsJson().toString());
         }
+        if ("/api/convert-jobs".equals(path)) {
+            return jsonResponse(200, "[]");
+        }
+        if ("/api/app/health".equals(path)) {
+            return jsonResponse(200, "{\"ok\":true,\"name\":\"utapractice-apk\",\"offline\":true}");
+        }
 
         String audioPrefix = "/api/songs/";
         if (path != null && path.startsWith(audioPrefix) && path.endsWith("/audio")) {
             String name = Uri.decode(path.substring(audioPrefix.length(), path.length() - "/audio".length()));
             File audio = audioFile(name);
             if (audio.exists()) return audioFileResponse(audioMimeFile(name), audio, request);
-            return null;
+            return jsonResponse(404, "{\"error\":\"这首歌没有本地音频，请先导入或同步\"}");
         }
 
         if (path != null && path.startsWith(audioPrefix)) {
             String name = Uri.decode(path.substring(audioPrefix.length()));
             File song = songJsonFile(name);
             if (song.exists()) return fileResponse("application/json", song);
+            return jsonResponse(404, "{\"error\":\"本地歌库没有这首歌\"}");
         }
 
         return null;
@@ -283,8 +292,10 @@ public class MainActivity extends Activity {
         public void syncAll() {
             new Thread(() -> {
                 try {
+                    String baseUrl = serverUrl();
+                    if (baseUrl.isEmpty()) throw new IOException("请先填写同步服务器地址");
                     emit("sync", "running", 0, "正在读取远端歌库");
-                    byte[] listBytes = httpGetBytes(serverUrl() + "/api/songs");
+                    byte[] listBytes = httpGetBytes(baseUrl + "/api/songs");
                     writeFile(songsListFile(), listBytes);
                     JSONArray songs = new JSONArray(new String(listBytes, StandardCharsets.UTF_8));
                     int failed = 0;
@@ -296,7 +307,7 @@ public class MainActivity extends Activity {
                         int progress = Math.round(index * 100f / Math.max(songs.length(), 1));
                         emit("sync", "running", progress, "同步 " + (index + 1) + "/" + songs.length() + "：" + name);
                         try {
-                            syncSong(name);
+                            syncSong(baseUrl, name);
                         } catch (Exception error) {
                             failed += 1;
                         }
@@ -366,7 +377,9 @@ public class MainActivity extends Activity {
 
     private String proxyJsonRequest(String method, String path, String body) throws IOException {
         String normalizedMethod = method == null ? "GET" : method.trim().toUpperCase();
-        return new String(httpRequest(normalizedMethod, serverUrl() + path, body).bytes, StandardCharsets.UTF_8);
+        String baseUrl = serverUrl();
+        if (baseUrl.isEmpty()) throw new IOException("这个功能需要先配置可选后端");
+        return new String(httpRequest(normalizedMethod, baseUrl + path, body).bytes, StandardCharsets.UTF_8);
     }
 
     private JSONObject handleSettingsPost(JSONObject payload) throws Exception {
@@ -827,15 +840,15 @@ public class MainActivity extends Activity {
         if (file.exists() && !file.delete()) throw new IOException("删除本地文件失败：" + file.getName());
     }
 
-    private void syncSong(String name) throws Exception {
+    private void syncSong(String baseUrl, String name) throws Exception {
         String encodedName = URLEncoder.encode(name, "UTF-8").replace("+", "%20");
-        byte[] songBytes = httpGetBytes(serverUrl() + "/api/songs/" + encodedName);
+        byte[] songBytes = httpGetBytes(baseUrl + "/api/songs/" + encodedName);
         writeFile(songJsonFile(name), songBytes);
 
         JSONObject song = new JSONObject(new String(songBytes, StandardCharsets.UTF_8));
         if (!song.optBoolean("has_audio", false)) return;
         int key = song.optInt("saved_key", 0);
-        HttpResult audio = httpGet(serverUrl() + "/api/songs/" + encodedName + "/audio?key=" + key);
+        HttpResult audio = httpGet(baseUrl + "/api/songs/" + encodedName + "/audio?key=" + key);
         writeFile(audioFile(name), audio.bytes);
         writeText(audioMimeSidecar(name), audio.contentType == null ? "audio/mpeg" : audio.contentType);
     }
@@ -875,7 +888,7 @@ public class MainActivity extends Activity {
     private String cleanUrl(String value) {
         String text = value == null ? "" : value.trim();
         while (text.endsWith("/")) text = text.substring(0, text.length() - 1);
-        return text.isEmpty() ? DEFAULT_SERVER_URL : text;
+        return text;
     }
 
     private HttpResult httpGet(String urlText) throws IOException {

@@ -151,3 +151,22 @@ test("APK stores AI settings locally instead of proxying them to the sync server
   assert.match(appJs, /requestJson\("\/api\/settings"/);
   assert.match(appJs, /requestJson\("\/api\/settings\/test"/);
 });
+
+test("APK does not use a hard-coded sync server as an implicit backend", () => {
+  assert.doesNotMatch(androidMain, /192\.168\.68\.200:8502/);
+  assert.doesNotMatch(indexHtml, /192\.168\.68\.200:8502/);
+  assert.match(androidMain, /private static final String DEFAULT_SERVER_URL = ""/);
+  assert.match(androidMain, /return text;/);
+  assert.match(androidMain, /if \(baseUrl\.isEmpty\(\)\) throw new IOException\("请先填写同步服务器地址"\)/);
+  assert.match(androidMain, /if \(baseUrl\.isEmpty\(\)\) throw new IOException\("这个功能需要先配置可选后端"\)/);
+});
+
+test("APK startup GET APIs are answered locally before any optional sync backend", () => {
+  const cachedFirst = androidMain.match(/private WebResourceResponse cachedFirstResponse\(WebResourceRequest request\)[\s\S]*?\n    private void cacheGetResponse/)?.[0] || "";
+  assert.match(cachedFirst, /"\/api\/songs"\.equals\(path\)/);
+  assert.match(cachedFirst, /"\/api\/settings"\.equals\(path\)/);
+  assert.match(cachedFirst, /"\/api\/convert-jobs"\.equals\(path\)/);
+  assert.match(cachedFirst, /"\/api\/app\/health"\.equals\(path\)/);
+  assert.match(cachedFirst, /return jsonResponse\(404, "\{\\"error\\":\\"本地歌库没有这首歌\\"\}"\)/);
+  assert.match(cachedFirst, /return jsonResponse\(404, "\{\\"error\\":\\"这首歌没有本地音频，请先导入或同步\\"\}"\)/);
+});

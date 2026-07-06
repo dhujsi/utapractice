@@ -127,7 +127,7 @@ songs/<歌曲名>.json
 1. 直接填写服务器地址，例如：
 
 ```text
-http://192.168.68.200:8502
+http://your-server.local:8502
 ```
 
 2. 填写一个云端配置 JSON URL，然后由 App 端从云端读取局域网服务器地址。
@@ -137,11 +137,11 @@ http://192.168.68.200:8502
 ```json
 {
   "version": 1,
-  "default_base_url": "http://192.168.68.200:8502",
+  "default_base_url": "http://your-server.local:8502",
   "servers": [
     {
-      "name": "飞牛局域网",
-      "base_url": "http://192.168.68.200:8502"
+      "name": "自定义后端",
+      "base_url": "http://your-server.local:8502"
     }
   ]
 }

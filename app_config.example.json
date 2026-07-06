@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "default_base_url": "http://192.168.68.200:8502",
+  "default_base_url": "http://your-server.local:8502",
   "servers": [
     {
-      "name": "飞牛局域网",
-      "base_url": "http://192.168.68.200:8502"
+      "name": "自定义后端",
+      "base_url": "http://your-server.local:8502"
     }
   ]
 }
