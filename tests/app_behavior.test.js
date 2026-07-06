@@ -170,3 +170,30 @@ test("APK startup GET APIs are answered locally before any optional sync backend
   assert.match(cachedFirst, /return jsonResponse\(404, "\{\\"error\\":\\"本地歌库没有这首歌\\"\}"\)/);
   assert.match(cachedFirst, /return jsonResponse\(404, "\{\\"error\\":\\"这首歌没有本地音频，请先导入或同步\\"\}"\)/);
 });
+
+test("APK generator workspace APIs are local and do not require the optional sync backend", () => {
+  assert.match(androidMain, /workspaceFile\(String name\)/);
+  assert.match(androidMain, /jobsFile\(\)/);
+  assert.match(androidMain, /handleWorkspaceSavePost\(/);
+  assert.match(androidMain, /handleWorkspacePublishPost\(/);
+  assert.match(androidMain, /handleConvertJobPost\(/);
+  assert.match(androidMain, /runLocalRubyJob\(/);
+  assert.match(androidMain, /performLocalRubyGeneration\(/);
+  assert.match(androidMain, /localJobsListJson\(/);
+  assert.match(androidMain, /path\.startsWith\("\/api\/lyrics-workspace\/"\)/);
+  assert.match(androidMain, /"\/api\/convert-jobs"\.equals\(path\)/);
+  assert.match(androidMain, /startLocalRubyJob\(jobId, songName/);
+  assert.match(androidMain, /openAiChatCompletionsUrl\(settings\.optString\("base_url", ""\)\)/);
+  assert.match(androidMain, /unsupportedJsonMode\(/);
+  assert.match(androidMain, /request\.remove\("response_format"\)/);
+  assert.match(androidMain, /setReadTimeout\(120000\)/);
+});
+
+test("APK can search and preview LRCLIB without the optional sync backend", () => {
+  assert.match(androidMain, /handleLyricsSearchPost\(/);
+  assert.match(androidMain, /handleLyricsPreviewPost\(/);
+  assert.match(androidMain, /searchLrclib\(/);
+  assert.match(androidMain, /previewLrclib\(/);
+  assert.match(androidMain, /https:\/\/lrclib\.net\/api\/search/);
+  assert.match(androidMain, /https:\/\/lrclib\.net\/api\/get\//);
+});

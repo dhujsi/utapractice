@@ -38,6 +38,8 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -160,10 +162,16 @@ public class MainActivity extends Activity {
             return jsonResponse(200, localSettingsJson().toString());
         }
         if ("/api/convert-jobs".equals(path)) {
-            return jsonResponse(200, "[]");
+            return jsonResponse(200, localJobsListJson().toString());
         }
         if ("/api/app/health".equals(path)) {
             return jsonResponse(200, "{\"ok\":true,\"name\":\"utapractice-apk\",\"offline\":true}");
+        }
+        if (path != null && path.startsWith("/api/lyrics-workspace/")) {
+            String name = Uri.decode(path.substring("/api/lyrics-workspace/".length()));
+            File workspace = workspaceFile(name);
+            if (workspace.exists()) return fileResponse("application/json", workspace);
+            return jsonResponse(404, "{\"error\":\"Lyrics workspace not found\"}");
         }
 
         String audioPrefix = "/api/songs/";
@@ -209,10 +217,16 @@ public class MainActivity extends Activity {
                 return jsonResponse(200, localSettingsJson().toString());
             }
             if ("/api/convert-jobs".equals(path)) {
-                return jsonResponse(200, "[]");
+                return jsonResponse(200, localJobsListJson().toString());
             }
             if ("/api/app/health".equals(path)) {
                 return jsonResponse(200, "{\"ok\":true,\"name\":\"utapractice-apk\",\"offline\":true}");
+            }
+            if (path != null && path.startsWith("/api/lyrics-workspace/")) {
+                String name = Uri.decode(path.substring("/api/lyrics-workspace/".length()));
+                File workspace = workspaceFile(name);
+                if (workspace.exists()) return fileResponse("application/json", workspace);
+                return jsonResponse(404, "{\"error\":\"Lyrics workspace not found\"}");
             }
 
             String audioPrefix = "/api/songs/";
@@ -240,7 +254,7 @@ public class MainActivity extends Activity {
         public String apiRequest(String method, String path, String body) {
             try {
                 String apiPath = apiPath(path);
-                if (isLocalPostPath(apiPath)) {
+                if (isLocalPostPath(apiPath) || isLocalDeletePath(apiPath)) {
                     JSONObject result = handleLocalPost(method, apiPath, body);
                     return result.toString();
                 }
@@ -333,9 +347,13 @@ public class MainActivity extends Activity {
 
     private JSONObject handleLocalPost(String method, String rawPath, String body) throws Exception {
         String normalizedMethod = method == null ? "GET" : method.trim().toUpperCase();
+        String path = apiPath(rawPath);
+        if ("DELETE".equals(normalizedMethod) && path.startsWith("/api/convert-jobs/")) {
+            String jobId = Uri.decode(path.substring("/api/convert-jobs/".length()));
+            return handleConvertJobDelete(jobId);
+        }
         if (!"POST".equals(normalizedMethod)) throw new IOException("APK 本地版暂不支持这个写方法");
 
-        String path = apiPath(rawPath);
         String songPrefix = "/api/songs/";
         if (path.startsWith(songPrefix) && path.endsWith("/meta")) {
             String name = Uri.decode(path.substring(songPrefix.length(), path.length() - "/meta".length()));
@@ -358,6 +376,35 @@ public class MainActivity extends Activity {
         if ("/api/settings/test".equals(path)) {
             return handleSettingsTestPost();
         }
+        if ("/api/lyrics-search".equals(path)) {
+            return handleLyricsSearchPost(new JSONObject(emptyJsonObject(body)));
+        }
+        if ("/api/lyrics-preview".equals(path)) {
+            return handleLyricsPreviewPost(new JSONObject(emptyJsonObject(body)));
+        }
+        if ("/api/convert-jobs".equals(path)) {
+            return handleConvertJobPost(new JSONObject(emptyJsonObject(body)));
+        }
+        if (path.startsWith("/api/convert-jobs/") && path.endsWith("/stop")) {
+            String jobId = Uri.decode(path.substring("/api/convert-jobs/".length(), path.length() - "/stop".length()));
+            return handleConvertJobStop(jobId);
+        }
+        if (path.startsWith("/api/lyrics-align/")) {
+            String name = Uri.decode(path.substring("/api/lyrics-align/".length()));
+            return handleWorkspaceAlignPost(name);
+        }
+        if (path.startsWith("/api/lyrics-workspace/") && path.endsWith("/use-preview")) {
+            String name = Uri.decode(path.substring("/api/lyrics-workspace/".length(), path.length() - "/use-preview".length()));
+            return handleWorkspaceUsePreviewPost(name, new JSONObject(emptyJsonObject(body)));
+        }
+        if (path.startsWith("/api/lyrics-workspace/") && path.endsWith("/publish")) {
+            String name = Uri.decode(path.substring("/api/lyrics-workspace/".length(), path.length() - "/publish".length()));
+            return handleWorkspacePublishPost(name);
+        }
+        if (path.startsWith("/api/lyrics-workspace/")) {
+            String name = Uri.decode(path.substring("/api/lyrics-workspace/".length()));
+            return handleWorkspaceSavePost(name, new JSONObject(emptyJsonObject(body)));
+        }
         throw new IOException("APK 本地版暂不支持这个接口");
     }
 
@@ -367,12 +414,22 @@ public class MainActivity extends Activity {
             "/api/upload/lyrics-text".equals(path)
                 || "/api/settings".equals(path)
                 || "/api/settings/test".equals(path)
+                || "/api/lyrics-search".equals(path)
+                || "/api/lyrics-preview".equals(path)
+                || "/api/convert-jobs".equals(path)
+                || path.startsWith("/api/lyrics-workspace/")
+                || path.startsWith("/api/lyrics-align/")
+                || path.startsWith("/api/convert-jobs/") && path.endsWith("/stop")
                 || path.startsWith(songPrefix) && (
                     path.endsWith("/meta")
                         || path.endsWith("/lyrics")
                         || path.endsWith("/delete")
                 )
         );
+    }
+
+    private boolean isLocalDeletePath(String path) {
+        return path != null && path.startsWith("/api/convert-jobs/") && !path.endsWith("/stop");
     }
 
     private String proxyJsonRequest(String method, String path, String body) throws IOException {
@@ -426,6 +483,342 @@ public class MainActivity extends Activity {
         result.put("ok", true);
         result.put("message", message);
         return result;
+    }
+
+    private JSONObject handleLyricsSearchPost(JSONObject payload) throws Exception {
+        String songName = payload.optString("song_name", "").trim();
+        String artist = payload.optString("artist", "").trim();
+        String album = payload.optString("album", "").trim();
+        String provider = payload.optString("provider", "aggregate").trim();
+        if (songName.isEmpty()) throw new IOException("Song name is required");
+
+        JSONObject result = new JSONObject();
+        JSONObject errors = new JSONObject();
+        if (provider.isEmpty() || "aggregate".equals(provider) || "lrclib".equals(provider)) {
+            result.put("results", searchLrclib(songName, artist, album));
+        } else {
+            result.put("results", new JSONArray());
+            errors.put(provider, "APK 本地模式暂只支持 LRCLIB；其他歌词源需要可选后端");
+        }
+        result.put("errors", errors);
+        return result;
+    }
+
+    private JSONObject handleLyricsPreviewPost(JSONObject payload) throws Exception {
+        JSONObject result = payload.optJSONObject("result");
+        if (result == null) result = payload;
+        if (!"lrclib".equals(result.optString("provider", ""))) {
+            throw new IOException("APK 本地模式暂只支持 LRCLIB 预览");
+        }
+        return previewLrclib(result);
+    }
+
+    private JSONArray searchLrclib(String songName, String artist, String album) throws Exception {
+        StringBuilder query = new StringBuilder();
+        appendQuery(query, "track_name", songName);
+        appendQuery(query, "artist_name", artist);
+        appendQuery(query, "album_name", album);
+        String raw = new String(httpGetBytes("https://lrclib.net/api/search?" + query), StandardCharsets.UTF_8);
+        JSONArray items = new JSONArray(raw);
+        JSONArray results = new JSONArray();
+        int count = Math.min(items.length(), 20);
+        for (int index = 0; index < count; index++) {
+            JSONObject item = items.optJSONObject(index);
+            if (item == null) continue;
+            JSONObject row = new JSONObject();
+            boolean hasSynced = !item.optString("syncedLyrics", "").trim().isEmpty();
+            row.put("provider", "lrclib");
+            row.put("source_song_id", String.valueOf(item.opt("id")));
+            row.put("title", item.optString("trackName", ""));
+            row.put("artist", item.optString("artistName", ""));
+            row.put("album", item.optString("albumName", ""));
+            row.put("duration", item.has("duration") ? item.opt("duration") : JSONObject.NULL);
+            row.put("has_original", hasSynced || !item.optString("plainLyrics", "").trim().isEmpty());
+            row.put("has_translation", false);
+            row.put("has_roman", false);
+            row.put("has_word_timing", false);
+            row.put("score", hasSynced ? 1 : 0.6);
+            row.put("match_hint", "lrclib · " + row.optString("artist", "unknown"));
+            row.put("source_data", new JSONObject());
+            results.put(row);
+        }
+        return results;
+    }
+
+    private JSONObject previewLrclib(JSONObject result) throws Exception {
+        String sourceId = result.optString("source_song_id", "").trim();
+        if (sourceId.isEmpty()) throw new IOException("Search result is missing source_song_id");
+        String raw = new String(httpGetBytes("https://lrclib.net/api/get/" + urlEncode(sourceId)), StandardCharsets.UTF_8);
+        JSONObject data = new JSONObject(raw);
+        String original = data.optString("syncedLyrics", "");
+        if (original.trim().isEmpty()) original = data.optString("plainLyrics", "");
+        JSONObject preview = new JSONObject();
+        preview.put("result", result);
+        preview.put("original_lrc", original);
+        preview.put("translation_lrc", "");
+        preview.put("roman_lrc", "");
+        preview.put("line_rows", alignLrcSources(original, "", ""));
+        preview.put("has_translation", false);
+        preview.put("has_roman", false);
+        return preview;
+    }
+
+    private JSONObject handleWorkspaceSavePost(String name, JSONObject payload) throws Exception {
+        String songName = cleanSongName(payload.optString("song_name", name));
+        if (songName.isEmpty()) throw new IOException("Song name is required");
+        JSONObject existing = readJsonObject(workspaceFile(songName));
+        String originalLrc = payload.has("original_lrc") ? payload.optString("original_lrc", "") : existing.optString("original_lrc", "");
+        String translationLrc = payload.has("translation_lrc") ? payload.optString("translation_lrc", "") : existing.optString("translation_lrc", "");
+        String romanLrc = payload.has("roman_lrc") ? payload.optString("roman_lrc", "") : existing.optString("roman_lrc", "");
+
+        JSONObject workspace = new JSONObject();
+        workspace.put("song_name", songName);
+        workspace.put("artist", payload.optString("artist", existing.optString("artist", "")));
+        workspace.put("source", payload.optJSONObject("source") != null ? payload.optJSONObject("source") : existing.optJSONObject("source") != null ? existing.optJSONObject("source") : new JSONObject());
+        workspace.put("original_lrc", originalLrc);
+        workspace.put("translation_lrc", translationLrc);
+        workspace.put("roman_lrc", romanLrc);
+        workspace.put("line_rows", alignLrcSources(originalLrc, translationLrc, romanLrc));
+        workspace.put("generated_lyrics", payload.optJSONArray("generated_lyrics") != null ? payload.optJSONArray("generated_lyrics") : new JSONArray());
+        workspace.put("status", "draft");
+        workspace.put("updated_at", nowText());
+        writeJsonObject(workspaceFile(songName), workspace);
+        return workspace;
+    }
+
+    private JSONObject handleWorkspaceUsePreviewPost(String name, JSONObject payload) throws Exception {
+        JSONObject result = payload.optJSONObject("result");
+        JSONObject preview = payload.optJSONObject("preview");
+        if (result == null || preview == null) throw new IOException("Preview result is required");
+        String songName = cleanSongName(payload.optString("song_name", name));
+        if (songName.isEmpty()) throw new IOException("Song name is required");
+
+        JSONObject source = new JSONObject();
+        source.put("provider", result.optString("provider", ""));
+        source.put("song_id", result.optString("source_song_id", ""));
+        source.put("album", result.optString("album", ""));
+        source.put("duration", result.has("duration") ? result.opt("duration") : JSONObject.NULL);
+
+        JSONObject workspace = new JSONObject();
+        workspace.put("song_name", songName);
+        workspace.put("artist", payload.optString("artist", result.optString("artist", "")));
+        workspace.put("source", source);
+        workspace.put("original_lrc", preview.optString("original_lrc", ""));
+        workspace.put("translation_lrc", preview.optString("translation_lrc", ""));
+        workspace.put("roman_lrc", preview.optString("roman_lrc", ""));
+        workspace.put("line_rows", alignLrcSources(workspace.optString("original_lrc", ""), workspace.optString("translation_lrc", ""), workspace.optString("roman_lrc", "")));
+        workspace.put("generated_lyrics", new JSONArray());
+        workspace.put("status", "draft");
+        workspace.put("updated_at", nowText());
+        writeJsonObject(workspaceFile(songName), workspace);
+        return workspace;
+    }
+
+    private JSONObject handleWorkspaceAlignPost(String name) throws Exception {
+        JSONObject workspace = readJsonObject(workspaceFile(name));
+        if (workspace.length() == 0) throw new IOException("Lyrics workspace not found");
+        workspace.put("line_rows", alignLrcSources(
+            workspace.optString("original_lrc", ""),
+            workspace.optString("translation_lrc", ""),
+            workspace.optString("roman_lrc", "")
+        ));
+        workspace.put("generated_lyrics", new JSONArray());
+        workspace.put("status", "draft");
+        workspace.put("updated_at", nowText());
+        writeJsonObject(workspaceFile(name), workspace);
+        return workspace;
+    }
+
+    private JSONObject handleWorkspacePublishPost(String name) throws Exception {
+        JSONObject workspace = readJsonObject(workspaceFile(name));
+        if (workspace.length() == 0) throw new IOException("Lyrics workspace not found");
+        JSONArray lyrics = workspace.optJSONArray("generated_lyrics");
+        if (lyrics == null || lyrics.length() == 0) throw new IOException("No generated lyrics to publish");
+
+        JSONObject detail = readLocalSong(cleanSongName(name));
+        detail.put("lyrics", lyrics);
+        detail.put("has_lyrics", true);
+        detail.put("lyrics_type", "json");
+        upsertLocalSong(detail);
+
+        workspace.put("status", "published");
+        workspace.put("updated_at", nowText());
+        writeJsonObject(workspaceFile(name), workspace);
+
+        JSONObject result = new JSONObject();
+        result.put("ok", true);
+        result.put("song_name", cleanSongName(name));
+        result.put("published_count", lyrics.length());
+        result.put("lyrics_count", lyrics.length());
+        return result;
+    }
+
+    private JSONObject handleConvertJobPost(JSONObject payload) throws Exception {
+        String songName = cleanSongName(payload.optString("song_name", ""));
+        String type = payload.optString("type", payload.optString("job_type", "convert_lyrics"));
+        if (songName.isEmpty()) throw new IOException("Song name is required");
+        if (!"generate_ruby_from_rows".equals(type)) throw new IOException("APK 本地模式只支持工作源 ruby 生成");
+        if (!workspaceFile(songName).exists()) throw new IOException("Lyrics workspace not found");
+        if (readLocalSettings().optString("api_key", "").trim().isEmpty()) throw new IOException("API key is not configured");
+
+        String jobId = UUID.randomUUID().toString().replace("-", "");
+        JSONObject job = new JSONObject();
+        job.put("id", jobId);
+        job.put("type", "generate_ruby_from_rows");
+        job.put("song_name", songName);
+        job.put("mode", "workspace");
+        job.put("progress", 0);
+        job.put("status", "queued");
+        job.put("message", "APK 本地任务已加入后台队列");
+        job.put("steps", new JSONArray().put(step("APK 本地任务已加入后台队列")));
+        job.put("created_at", nowText());
+        job.put("updated_at", nowText());
+        job.put("payload", payload);
+        saveJob(job);
+        startLocalRubyJob(jobId, songName);
+        return publicJob(job);
+    }
+
+    private JSONObject handleConvertJobStop(String jobId) throws Exception {
+        JSONObject job = readJobsJson().optJSONObject(jobId);
+        if (job == null) throw new IOException("Job not found");
+        job.put("stop_requested", true);
+        job.put("status", "stopped");
+        job.put("message", "任务已停止");
+        job.put("updated_at", nowText());
+        saveJob(job);
+        return publicJob(job);
+    }
+
+    private JSONObject handleConvertJobDelete(String jobId) throws Exception {
+        JSONObject jobs = readJobsJson();
+        jobs.remove(jobId);
+        writeJobsJson(jobs);
+        JSONObject result = new JSONObject();
+        result.put("ok", true);
+        return result;
+    }
+
+    private void startLocalRubyJob(String jobId, String songName) {
+        new Thread(() -> runLocalRubyJob(jobId, songName)).start();
+    }
+
+    private void runLocalRubyJob(String jobId, String songName) {
+        try {
+            updateJob(jobId, "running", 1, "任务已开始", false);
+            performLocalRubyGeneration(jobId, songName);
+            updateJob(jobId, "done", 100, "生成完成", true);
+        } catch (Exception error) {
+            try {
+                if ("TASK_STOPPED".equals(error.getMessage())) {
+                    updateJob(jobId, "stopped", 100, "任务已停止", true);
+                } else {
+                    updateJob(jobId, "failed", 100, "生成失败：" + error.getMessage(), true);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void performLocalRubyGeneration(String jobId, String songName) throws Exception {
+        JSONObject workspace = readJsonObject(workspaceFile(songName));
+        if (workspace.length() == 0) throw new IOException("Lyrics workspace not found");
+        JSONArray rows = workspace.optJSONArray("line_rows");
+        if (rows == null || rows.length() == 0) throw new IOException("Workspace has no aligned lyric rows");
+        JSONObject settings = readLocalSettings();
+        if (settings.optString("api_key", "").trim().isEmpty()) throw new IOException("API key is not configured");
+
+        workspace.put("status", "generating");
+        workspace.put("errors", new JSONArray());
+        workspace.put("generated_lyrics", new JSONArray());
+        workspace.put("updated_at", nowText());
+        writeJsonObject(workspaceFile(songName), workspace);
+
+        JSONArray generated = new JSONArray();
+        int chunkSize = 8;
+        int totalChunks = Math.max(1, (int) Math.ceil(rows.length() / (double) chunkSize));
+        for (int start = 0, chunkNumber = 1; start < rows.length(); start += chunkSize, chunkNumber++) {
+            if (jobStopRequested(jobId)) throw new IOException("TASK_STOPPED");
+            int end = Math.min(rows.length(), start + chunkSize);
+            appendJobStep(jobId, "正在生成第 " + chunkNumber + "/" + totalChunks + " 段");
+            JSONArray chunk = new JSONArray();
+            for (int index = start; index < end; index++) chunk.put(rows.getJSONObject(index));
+            JSONArray chunkResult = generateRubyChunk(settings, workspace, chunk, chunkNumber, totalChunks);
+            for (int index = 0; index < chunkResult.length(); index++) generated.put(chunkResult.getJSONObject(index));
+            int progress = 1 + Math.round((chunkNumber / (float) totalChunks) * 94);
+            updateJob(jobId, "running", progress, "已完成 " + chunkNumber + "/" + totalChunks + " 段", false);
+        }
+
+        workspace.put("generated_lyrics", generated);
+        workspace.put("status", "generated");
+        workspace.put("errors", new JSONArray());
+        workspace.put("updated_at", nowText());
+        writeJsonObject(workspaceFile(songName), workspace);
+    }
+
+    private JSONArray generateRubyChunk(JSONObject settings, JSONObject workspace, JSONArray rows, int chunkNumber, int totalChunks) throws Exception {
+        JSONArray targetRows = new JSONArray();
+        for (int index = 0; index < rows.length(); index++) {
+            JSONObject row = rows.getJSONObject(index);
+            JSONObject target = new JSONObject();
+            target.put("row_number", index + 1);
+            target.put("index", row.optInt("index", index));
+            target.put("time", row.opt("time"));
+            target.put("original", row.optString("original", ""));
+            target.put("translation", row.optString("translation", ""));
+            target.put("roman_or_pronunciation", row.optString("roman", ""));
+            targetRows.put(target);
+        }
+
+        JSONObject task = new JSONObject();
+        task.put("task", "Generate ruby annotated JSON for aligned lyric rows.");
+        task.put("song_name", workspace.optString("song_name", ""));
+        task.put("artist", workspace.optString("artist", ""));
+        task.put("chunk_number", chunkNumber);
+        task.put("total_chunks", totalChunks);
+        task.put("rules", "Return JSON object only. Schema: {\"items\":[{\"row_number\":1,\"original_html\":\"lyrics with <ruby>漢字<rt>かんじ</rt></ruby>\",\"translation\":\"plain translation or empty\"}]}. Preserve every original lyric exactly outside ruby tags. Do not add rows or remove rows.");
+        task.put("target_rows", targetRows);
+
+        JSONObject request = new JSONObject();
+        request.put("model", settings.optString("model", "deepseek-v4-pro"));
+        request.put("temperature", 0.1);
+        request.put("max_tokens", 6000);
+        request.put("response_format", new JSONObject().put("type", "json_object"));
+        JSONArray messages = new JSONArray();
+        messages.put(new JSONObject().put("role", "system").put("content", "You generate strict JSON for Japanese lyric ruby annotation. Return JSON only."));
+        messages.put(new JSONObject().put("role", "user").put("content", task.toString()));
+        request.put("messages", messages);
+
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Authorization", "Bearer " + settings.optString("api_key", ""));
+        HttpResult response;
+        try {
+            response = httpRequest("POST", openAiChatCompletionsUrl(settings.optString("base_url", "")), request.toString(), headers);
+        } catch (IOException error) {
+            if (!unsupportedJsonMode(error.getMessage())) throw error;
+            request.remove("response_format");
+            response = httpRequest("POST", openAiChatCompletionsUrl(settings.optString("base_url", "")), request.toString(), headers);
+        }
+        JSONObject raw = new JSONObject(new String(response.bytes, StandardCharsets.UTF_8));
+        JSONArray choices = raw.optJSONArray("choices");
+        if (choices == null || choices.length() == 0) throw new IOException("模型没有返回 choices");
+        JSONObject message = choices.getJSONObject(0).optJSONObject("message");
+        String content = message == null ? "" : message.optString("content", "").trim();
+        JSONArray items = modelItems(content);
+
+        JSONArray normalized = new JSONArray();
+        for (int index = 0; index < rows.length(); index++) {
+            JSONObject source = rows.getJSONObject(index);
+            JSONObject item = itemForRow(items, index + 1, index);
+            JSONObject line = new JSONObject();
+            line.put("time", source.opt("time"));
+            String originalHtml = item == null ? "" : item.optString("original_html", "");
+            if (originalHtml.trim().isEmpty()) originalHtml = source.optString("original", "");
+            line.put("original_html", originalHtml);
+            line.put("translation", item == null ? source.optString("translation", "") : item.optString("translation", source.optString("translation", "")));
+            normalized.put(line);
+        }
+        return normalized;
     }
 
     private JSONObject handleMetaPost(String name, JSONObject payload) throws Exception {
@@ -685,6 +1078,139 @@ public class MainActivity extends Activity {
         writeText(settingsFile(), settings.toString());
     }
 
+    private JSONObject readJsonObject(File file) {
+        if (!file.exists()) return new JSONObject();
+        try (InputStream input = new FileInputStream(file)) {
+            return new JSONObject(new String(readAll(input), StandardCharsets.UTF_8));
+        } catch (Exception error) {
+            return new JSONObject();
+        }
+    }
+
+    private void writeJsonObject(File file, JSONObject value) throws IOException {
+        writeText(file, value.toString());
+    }
+
+    private synchronized JSONObject readJobsJson() {
+        return readJsonObject(jobsFile());
+    }
+
+    private synchronized void writeJobsJson(JSONObject jobs) throws IOException {
+        writeJsonObject(jobsFile(), jobs);
+    }
+
+    private synchronized void saveJob(JSONObject job) throws Exception {
+        JSONObject jobs = readJobsJson();
+        jobs.put(job.optString("id", ""), job);
+        writeJobsJson(jobs);
+    }
+
+    private synchronized void updateJob(String jobId, String status, int progress, String message, boolean finished) throws Exception {
+        JSONObject jobs = readJobsJson();
+        JSONObject job = jobs.optJSONObject(jobId);
+        if (job == null) return;
+        job.put("status", status);
+        job.put("progress", progress);
+        job.put("message", message);
+        job.put("updated_at", nowText());
+        if (finished) job.put("finished_at", nowText());
+        jobs.put(jobId, job);
+        writeJobsJson(jobs);
+    }
+
+    private synchronized void appendJobStep(String jobId, String message) throws Exception {
+        JSONObject jobs = readJobsJson();
+        JSONObject job = jobs.optJSONObject(jobId);
+        if (job == null) return;
+        JSONArray steps = job.optJSONArray("steps");
+        if (steps == null) steps = new JSONArray();
+        steps.put(step(message));
+        job.put("steps", steps);
+        job.put("message", message);
+        job.put("updated_at", nowText());
+        jobs.put(jobId, job);
+        writeJobsJson(jobs);
+    }
+
+    private synchronized boolean jobStopRequested(String jobId) {
+        JSONObject job = readJobsJson().optJSONObject(jobId);
+        return job != null && job.optBoolean("stop_requested", false);
+    }
+
+    private JSONArray localJobsListJson() {
+        JSONObject jobs = readJobsJson();
+        JSONArray items = new JSONArray();
+        Iterator<String> keys = jobs.keys();
+        while (keys.hasNext()) {
+            JSONObject job = jobs.optJSONObject(keys.next());
+            if (job != null) items.put(publicJob(job));
+        }
+        return items;
+    }
+
+    private JSONObject publicJob(JSONObject job) {
+        JSONObject result = new JSONObject();
+        Iterator<String> keys = job.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            if ("payload".equals(key)) continue;
+            try {
+                result.put(key, job.opt(key));
+            } catch (Exception ignored) {
+            }
+        }
+        return result;
+    }
+
+    private JSONObject step(String message) throws Exception {
+        JSONObject step = new JSONObject();
+        step.put("time", nowText());
+        step.put("message", message);
+        return step;
+    }
+
+    private String nowText() {
+        return String.valueOf(System.currentTimeMillis());
+    }
+
+    private void appendQuery(StringBuilder query, String key, String value) throws Exception {
+        String text = value == null ? "" : value.trim();
+        if (text.isEmpty()) return;
+        if (query.length() > 0) query.append('&');
+        query.append(urlEncode(key)).append('=').append(urlEncode(text));
+    }
+
+    private String urlEncode(String value) throws Exception {
+        return URLEncoder.encode(value == null ? "" : value, "UTF-8").replace("+", "%20");
+    }
+
+    private JSONArray modelItems(String content) throws Exception {
+        String text = content == null ? "" : content.trim();
+        if (text.startsWith("```")) {
+            text = text.replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "").trim();
+        }
+        if (text.startsWith("[")) return new JSONArray(text);
+        JSONObject object = new JSONObject(text);
+        JSONArray items = object.optJSONArray("items");
+        if (items != null) return items;
+        JSONArray result = object.optJSONArray("result");
+        if (result != null) return result;
+        throw new IOException("模型返回 JSON 中没有 items 数组");
+    }
+
+    private JSONObject itemForRow(JSONArray items, int rowNumber, int fallbackIndex) {
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject item = items.optJSONObject(index);
+            if (item != null && item.optInt("row_number", -1) == rowNumber) return item;
+        }
+        return items.optJSONObject(fallbackIndex);
+    }
+
+    private boolean unsupportedJsonMode(String message) {
+        String text = message == null ? "" : message.toLowerCase();
+        return text.contains("response_format") || text.contains("json_object") || text.contains("unsupported") || text.contains("invalid parameter");
+    }
+
     private String openAiChatCompletionsUrl(String baseUrl) {
         String base = baseUrl == null ? "" : baseUrl.trim();
         if (base.isEmpty()) base = "https://api.openai.com/v1";
@@ -782,6 +1308,126 @@ public class MainActivity extends Activity {
             }
         }
         return sortLyricsByTime(lines);
+    }
+
+    private JSONArray alignLrcSources(String originalLrc, String translationLrc, String romanLrc) throws Exception {
+        JSONArray originalRows = groupLrcRows(parseLrcTextRows(originalLrc));
+        JSONArray translationRows = groupLrcRows(parseLrcTextRows(translationLrc));
+        JSONArray romanRows = groupLrcRows(parseLrcTextRows(romanLrc));
+        JSONArray lineRows = new JSONArray();
+        for (int index = 0; index < originalRows.length(); index++) {
+            JSONObject row = originalRows.getJSONObject(index);
+            double time = row.optDouble("time", 0);
+            JSONObject line = new JSONObject();
+            line.put("index", index);
+            line.put("time", row.opt("time"));
+            line.put("original", row.optString("text", ""));
+            line.put("translation", nearestText(translationRows, time));
+            line.put("roman", nearestText(romanRows, time));
+            lineRows.put(line);
+        }
+        return lineRows;
+    }
+
+    private JSONArray parseLrcTextRows(String text) throws Exception {
+        JSONArray lines = new JSONArray();
+        Pattern pattern = Pattern.compile("\\[(\\d{1,2}):(\\d{2})(?:[.:](\\d{1,3}))?\\]");
+        String[] rawLines = text == null ? new String[0] : text.split("\\r?\\n");
+        for (String rawLine : rawLines) {
+            Matcher matcher = pattern.matcher(rawLine);
+            JSONArray times = new JSONArray();
+            while (matcher.find()) {
+                int minutes = Integer.parseInt(matcher.group(1));
+                int seconds = Integer.parseInt(matcher.group(2));
+                String fraction = matcher.group(3) == null ? "0" : matcher.group(3);
+                double fractionSeconds = Integer.parseInt(fraction) / (fraction.length() == 3 ? 1000.0 : 100.0);
+                times.put(Math.round((minutes * 60 + seconds + fractionSeconds) * 1000.0) / 1000.0);
+            }
+            if (times.length() == 0) continue;
+            String lyric = pattern.matcher(rawLine).replaceAll("").trim();
+            for (int index = 0; index < times.length(); index++) {
+                JSONObject line = new JSONObject();
+                line.put("time", times.getDouble(index));
+                line.put("text", lyric);
+                lines.put(line);
+            }
+        }
+        return sortRowsByTime(lines);
+    }
+
+    private JSONArray groupLrcRows(JSONArray rows) throws Exception {
+        JSONArray grouped = new JSONArray();
+        for (int index = 0; index < rows.length(); index++) {
+            JSONObject row = rows.getJSONObject(index);
+            double time = row.optDouble("time", 0);
+            String text = row.optString("text", "").trim();
+            JSONObject current = grouped.length() == 0 ? null : grouped.getJSONObject(grouped.length() - 1);
+            if (current == null || current.optDouble("time", 0) != time) {
+                current = new JSONObject();
+                current.put("time", row.opt("time"));
+                current.put("text", text);
+                current.put("texts", new JSONArray());
+                grouped.put(current);
+            }
+            if (!text.isEmpty()) {
+                JSONArray texts = current.optJSONArray("texts");
+                if (texts == null) texts = new JSONArray();
+                texts.put(text);
+                current.put("texts", texts);
+                current.put("text", joinTexts(texts));
+            }
+        }
+        return grouped;
+    }
+
+    private String nearestText(JSONArray rows, double time) {
+        if (rows == null || rows.length() == 0) return "";
+        String exact = "";
+        double bestDistance = Double.MAX_VALUE;
+        String best = "";
+        for (int index = 0; index < rows.length(); index++) {
+            JSONObject row = rows.optJSONObject(index);
+            if (row == null) continue;
+            double distance = Math.abs(row.optDouble("time", 0) - time);
+            if (distance == 0) exact = exact.isEmpty() ? row.optString("text", "") : exact + " / " + row.optString("text", "");
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = row.optString("text", "");
+            }
+        }
+        if (!exact.isEmpty()) return exact;
+        return bestDistance <= 0.75 ? best : "";
+    }
+
+    private String joinTexts(JSONArray texts) {
+        StringBuilder builder = new StringBuilder();
+        for (int index = 0; index < texts.length(); index++) {
+            String text = texts.optString(index, "").trim();
+            if (text.isEmpty()) continue;
+            if (builder.length() > 0) builder.append(" / ");
+            builder.append(text);
+        }
+        return builder.toString();
+    }
+
+    private JSONArray sortRowsByTime(JSONArray source) throws Exception {
+        JSONArray sorted = new JSONArray();
+        for (int sourceIndex = 0; sourceIndex < source.length(); sourceIndex++) {
+            JSONObject line = source.getJSONObject(sourceIndex);
+            int insertAt = sorted.length();
+            for (int sortedIndex = 0; sortedIndex < sorted.length(); sortedIndex++) {
+                if (line.optDouble("time", 0) < sorted.getJSONObject(sortedIndex).optDouble("time", 0)) {
+                    insertAt = sortedIndex;
+                    break;
+                }
+            }
+            JSONArray next = new JSONArray();
+            for (int index = 0; index < insertAt; index++) next.put(sorted.getJSONObject(index));
+            next.put(line);
+            for (int index = insertAt; index < sorted.length(); index++) next.put(sorted.getJSONObject(index));
+            sorted = next;
+        }
+        return sorted;
     }
 
     private JSONArray sortLyricsByTime(JSONArray source) throws Exception {
@@ -901,8 +1547,8 @@ public class MainActivity extends Activity {
 
     private HttpResult httpRequest(String method, String urlText, String body, Map<String, String> extraHeaders) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(urlText).openConnection();
-        connection.setConnectTimeout(1500);
-        connection.setReadTimeout(8000);
+        connection.setConnectTimeout(10000);
+        connection.setReadTimeout(120000);
         connection.setRequestProperty("User-Agent", "utapractice-android");
         if (extraHeaders != null) {
             for (Map.Entry<String, String> entry : extraHeaders.entrySet()) {
@@ -1096,8 +1742,16 @@ public class MainActivity extends Activity {
         return new File(cacheDir("config"), "settings.local.json");
     }
 
+    private File jobsFile() {
+        return new File(cacheDir("jobs"), "lyrics_jobs.json");
+    }
+
     private File songJsonFile(String name) {
         return new File(cacheDir("songs"), safeName(name) + ".json");
+    }
+
+    private File workspaceFile(String name) {
+        return new File(cacheDir("workspaces"), safeName(cleanSongName(name)) + ".lyrics_source.json");
     }
 
     private File audioFile(String name) {

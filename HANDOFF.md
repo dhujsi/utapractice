@@ -9,6 +9,8 @@
 - APK 已移除默认同步服务器地址：`getServerUrl()` 初始为空；未填写可选同步后端时不会隐式访问用户内网服务器。
 - APK JSON 写请求通过 `window.UtaPracticeAndroid.apiRequest()` 进入 Android，本地支持 `/api/songs/<name>/meta`、`/api/songs/<name>/lyrics`、`/api/upload/lyrics-text` 和 `/api/songs/<name>/delete`。
 - APK 接口设置已本地化：`/api/settings` 读写 App 私有目录的 `settings.local.json`，`/api/settings/test` 直接测试 OpenAI 兼容接口，不再代理到同步服务器。
+- APK 生成页已补本地后端：工作源保存/读取/对齐/发布、任务列表、停止/删除任务、ruby 生成任务都保存在 App 私有目录；AI 生成直接调用本机保存的 OpenAI 兼容接口，不依赖同步服务器。
+- APK 在无同步服务器时支持 LRCLIB 搜索和预览；网易云/QQ/酷狗等扩展来源仍可走 Web 后端或后续 APK provider。
 - APK 音频/歌词文件导入通过 `chooseAudioForSong()` / `chooseLyricsForSong()` 打开 Android 文件选择器并复制到 App 私有目录。
 - APK 离线同步入口仍只在 `window.UtaPracticeAndroid` 存在时显示，普通网页端不会出现。
 - 本次重点修复了 APK 本地音频 Range、歌词点击 seek ready 保护、公共移动端侧栏滑动。
@@ -20,7 +22,7 @@
 
 ## 验证
 
-- 已通过：`node --test tests/app_behavior.test.js`，17 个行为测试通过，覆盖 APK 本地 JSON 写入桥、Android 文件导入桥、本地接口设置和无硬编码同步服务器。
+- 已通过：`node --test tests/app_behavior.test.js`，19 个行为测试通过，覆盖 APK 本地 JSON 写入桥、Android 文件导入桥、本地接口设置、无硬编码同步服务器、本地生成工作源和 LRCLIB 本地搜索/预览。
 - 已通过：`node --check web_static/app.js`
 - 已通过：`python3 -m py_compile web_app.py`
 - 已通过：`cd android && ANDROID_HOME=/home/er/android-sdk bash ./gradlew assembleDebug`
@@ -33,4 +35,4 @@
 
 ## 后续建议
 
-- 安装 `dist/utapractice-local-backend-debug.apk` 实机验证：空库启动、导入音频、导入歌词、粘贴歌词、保存备注/Key/已学会、可选同步。
+- 安装 `dist/utapractice-local-backend-debug.apk` 实机验证：空库启动、导入音频、导入歌词、粘贴歌词、保存备注/Key/已学会、接口测试、手输工作源生成 ruby、发布正式歌词、可选同步。
