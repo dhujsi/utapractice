@@ -136,6 +136,7 @@ test("APK optional sync panel does not expose cloud config loading", () => {
   assert.doesNotMatch(indexHtml, /apkLoadCloud/);
   assert.doesNotMatch(indexHtml, /读取云端/);
   assert.doesNotMatch(appJs, /loadCloudConfig/);
+  assert.doesNotMatch(androidMain, /loadCloudConfig/);
   assert.match(indexHtml, /可选同步后端地址/);
   assert.match(indexHtml, /id="apkSyncAll"/);
 });
@@ -225,7 +226,8 @@ test("APK generator workspace APIs are local and do not require the optional syn
   assert.match(androidMain, /openAiChatCompletionsUrl\(settings\.optString\("base_url", ""\)\)/);
   assert.match(androidMain, /unsupportedJsonMode\(/);
   assert.match(androidMain, /request\.remove\("response_format"\)/);
-  assert.match(androidMain, /setReadTimeout\(120000\)/);
+  assert.match(androidMain, /httpRequest\(method, urlText, body, extraHeaders, 10000, 120000\)/);
+  assert.match(androidMain, /setReadTimeout\(readTimeoutMs\)/);
 });
 
 test("APK can search and preview LRCLIB without the optional sync backend", () => {
@@ -235,4 +237,36 @@ test("APK can search and preview LRCLIB without the optional sync backend", () =
   assert.match(androidMain, /previewLrclib\(/);
   assert.match(androidMain, /https:\/\/lrclib\.net\/api\/search/);
   assert.match(androidMain, /https:\/\/lrclib\.net\/api\/get\//);
+});
+
+test("web lyric search uses resilient provider calls instead of hanging on slow or broken sources", () => {
+  assert.match(webApp, /SEARCH_PROVIDER_TIMEOUT_SECONDS\s*=\s*4/);
+  assert.match(webApp, /SEARCH_AGGREGATE_TIMEOUT_SECONDS\s*=\s*6/);
+  assert.match(webApp, /SEARCH_HTTP_TIMEOUT_SECONDS\s*=\s*4/);
+  assert.match(webApp, /def search_lrclib\(song_name, artist="", album=""\):[\s\S]*"q": broad_query/);
+  assert.match(webApp, /def merge_search_results\(/);
+  assert.match(webApp, /def search_qq\(song_name, artist="", album=""\):[\s\S]*smartbox_new\.fcg/);
+  assert.doesNotMatch(webApp, /client_search_cp\?/);
+  assert.match(webApp, /as_completed\(futures\.values\(\), timeout=SEARCH_AGGREGATE_TIMEOUT_SECONDS\)/);
+  assert.match(webApp, /for provider_name, future in futures\.items\(\):[\s\S]*future\.cancel\(\)/);
+  assert.match(webApp, /executor\.shutdown\(wait=False, cancel_futures=True\)/);
+});
+
+test("lyrics and audio library mutations reload the affected song before playback continues", () => {
+  assert.match(appJs, /async function refreshSongsAfterLibraryMutation\(affectedName = ""\)/);
+  assert.match(appJs, /await loadSong\(reloadName\)/);
+  assert.match(appJs, /refreshSongsAfterLibraryMutation\(result\.song_name \|\| formFields\.target_song \|\| formFields\.song_name\)/);
+  assert.match(appJs, /refreshSongsAfterLibraryMutation\(result\.song_name \|\| target_song \|\| song_name\)/);
+  assert.match(appJs, /const previousCurrent = state\.current\?\.name \|\| ""/);
+  assert.match(appJs, /refreshSongsAfterLibraryMutation\(detail\.song_name \|\| previousCurrent\)/);
+});
+
+test("APK lyric search can use QQ locally without the optional sync backend", () => {
+  assert.match(androidMain, /private JSONArray searchQq\(/);
+  assert.match(androidMain, /private JSONObject previewQq\(/);
+  assert.match(androidMain, /smartbox_new\.fcg/);
+  assert.match(androidMain, /fcg_query_lyric_new\.fcg/);
+  assert.match(androidMain, /mergeSearchResults\(/);
+  assert.match(androidMain, /"qq"\.equals\(provider\)/);
+  assert.doesNotMatch(androidMain, /暂只支持 LRCLIB/);
 });

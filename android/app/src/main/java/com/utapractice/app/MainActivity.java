@@ -50,10 +50,10 @@ public class MainActivity extends Activity {
     private static final String DEFAULT_SERVER_URL = "";
     private static final String PREFS_NAME = "utapractice_apk";
     private static final String KEY_SERVER_URL = "server_url";
-    private static final String KEY_CLOUD_CONFIG_URL = "cloud_config_url";
     private static final String KEY_LAST_SYNC = "last_sync";
     private static final int REQUEST_IMPORT_AUDIO = 4101;
     private static final int REQUEST_IMPORT_LYRICS = 4102;
+    private static final int SEARCH_TIMEOUT_MS = 4000;
 
     private WebView webView;
     private SharedPreferences prefs;
@@ -275,34 +275,6 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
-        public String getCloudConfigUrl() {
-            return prefs.getString(KEY_CLOUD_CONFIG_URL, "");
-        }
-
-        @JavascriptInterface
-        public void loadCloudConfig(String value) {
-            prefs.edit().putString(KEY_CLOUD_CONFIG_URL, cleanUrl(value)).apply();
-            new Thread(() -> {
-                try {
-                    emit("cloud", "reading", 0, "正在读取云端配置");
-                    String raw = new String(httpGetBytes(cleanUrl(value)), StandardCharsets.UTF_8);
-                    JSONObject config = new JSONObject(raw);
-                    String nextServer = cleanUrl(config.optString("default_base_url", config.optString("defaultBaseUrl", "")));
-                    JSONArray servers = config.optJSONArray("servers");
-                    if (nextServer.isEmpty() && servers != null && servers.length() > 0) {
-                        JSONObject first = servers.optJSONObject(0);
-                        if (first != null) nextServer = cleanUrl(first.optString("base_url", first.optString("baseUrl", first.optString("url", ""))));
-                    }
-                    if (nextServer.isEmpty()) throw new IOException("云端配置没有服务器地址");
-                    prefs.edit().putString(KEY_SERVER_URL, nextServer).apply();
-                    emit("cloud", "done", 100, nextServer);
-                } catch (Exception error) {
-                    emit("cloud", "failed", 0, "云端配置失败：" + error.getMessage());
-                }
-            }).start();
-        }
-
-        @JavascriptInterface
         public void syncAll() {
             new Thread(() -> {
                 try {
@@ -494,12 +466,24 @@ public class MainActivity extends Activity {
 
         JSONObject result = new JSONObject();
         JSONObject errors = new JSONObject();
-        if (provider.isEmpty() || "aggregate".equals(provider) || "lrclib".equals(provider)) {
-            result.put("results", searchLrclib(songName, artist, album));
-        } else {
-            result.put("results", new JSONArray());
-            errors.put(provider, "APK 本地模式暂只支持 LRCLIB；其他歌词源需要可选后端");
+        JSONArray results = new JSONArray();
+        boolean aggregate = provider.isEmpty() || "aggregate".equals(provider);
+        if (aggregate || "lrclib".equals(provider)) {
+            try {
+                results = mergeSearchResults(results, searchLrclib(songName, artist, album));
+            } catch (Exception error) {
+                errors.put("lrclib", error.getMessage());
+            }
         }
+        if (aggregate || "qq".equals(provider)) {
+            try {
+                results = mergeSearchResults(results, searchQq(songName, artist, album));
+            } catch (Exception error) {
+                errors.put("qq", error.getMessage());
+            }
+        }
+        if (!aggregate && !"lrclib".equals(provider) && !"qq".equals(provider)) errors.put(provider, "未知歌词源");
+        result.put("results", results);
         result.put("errors", errors);
         return result;
     }
@@ -507,19 +491,28 @@ public class MainActivity extends Activity {
     private JSONObject handleLyricsPreviewPost(JSONObject payload) throws Exception {
         JSONObject result = payload.optJSONObject("result");
         if (result == null) result = payload;
-        if (!"lrclib".equals(result.optString("provider", ""))) {
-            throw new IOException("APK 本地模式暂只支持 LRCLIB 预览");
-        }
-        return previewLrclib(result);
+        String provider = result.optString("provider", "");
+        if ("lrclib".equals(provider)) return previewLrclib(result);
+        if ("qq".equals(provider)) return previewQq(result);
+        throw new IOException("未知歌词源");
     }
 
     private JSONArray searchLrclib(String songName, String artist, String album) throws Exception {
         StringBuilder query = new StringBuilder();
-        appendQuery(query, "track_name", songName);
-        appendQuery(query, "artist_name", artist);
-        appendQuery(query, "album_name", album);
-        String raw = new String(httpGetBytes("https://lrclib.net/api/search?" + query), StandardCharsets.UTF_8);
+        if (!artist.trim().isEmpty() || !album.trim().isEmpty()) {
+            appendQuery(query, "track_name", songName);
+            appendQuery(query, "artist_name", artist);
+            appendQuery(query, "album_name", album);
+        } else {
+            appendQuery(query, "q", songName);
+        }
+        String raw = new String(httpGetSearchBytes("https://lrclib.net/api/search?" + query), StandardCharsets.UTF_8);
         JSONArray items = new JSONArray(raw);
+        if (items.length() == 0 && (!artist.trim().isEmpty() || !album.trim().isEmpty())) {
+            StringBuilder broad = new StringBuilder();
+            appendQuery(broad, "q", (songName + " " + artist).trim());
+            items = new JSONArray(new String(httpGetSearchBytes("https://lrclib.net/api/search?" + broad), StandardCharsets.UTF_8));
+        }
         JSONArray results = new JSONArray();
         int count = Math.min(items.length(), 20);
         for (int index = 0; index < count; index++) {
@@ -545,10 +538,48 @@ public class MainActivity extends Activity {
         return results;
     }
 
+    private JSONArray searchQq(String songName, String artist, String album) throws Exception {
+        String keyword = (songName + " " + artist).trim();
+        String url = "https://c.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg?format=json&key=" + urlEncode(keyword);
+        String raw = new String(httpGetSearchBytes(url, qqHeaders()), StandardCharsets.UTF_8);
+        JSONObject data = new JSONObject(raw);
+        JSONObject rootData = data.optJSONObject("data");
+        JSONObject song = rootData == null ? null : rootData.optJSONObject("song");
+        JSONArray items = song == null ? new JSONArray() : song.optJSONArray("itemlist");
+        if (items == null) items = new JSONArray();
+        JSONArray results = new JSONArray();
+        int count = Math.min(items.length(), 20);
+        for (int index = 0; index < count; index++) {
+            JSONObject item = items.optJSONObject(index);
+            if (item == null) continue;
+            String songId = firstNonEmpty(item.optString("mid", ""), item.optString("songmid", ""));
+            if (songId.isEmpty()) continue;
+            JSONObject sourceData = new JSONObject();
+            sourceData.put("qq_id", item.optString("id", ""));
+            sourceData.put("docid", item.optString("docid", ""));
+            JSONObject row = new JSONObject();
+            row.put("provider", "qq");
+            row.put("source_song_id", songId);
+            row.put("title", item.optString("name", ""));
+            row.put("artist", item.optString("singer", ""));
+            row.put("album", item.optString("albumname", ""));
+            row.put("duration", JSONObject.NULL);
+            row.put("has_original", true);
+            row.put("has_translation", true);
+            row.put("has_roman", false);
+            row.put("has_word_timing", false);
+            row.put("score", JSONObject.NULL);
+            row.put("match_hint", "qq · " + row.optString("artist", "unknown"));
+            row.put("source_data", sourceData);
+            results.put(row);
+        }
+        return results;
+    }
+
     private JSONObject previewLrclib(JSONObject result) throws Exception {
         String sourceId = result.optString("source_song_id", "").trim();
         if (sourceId.isEmpty()) throw new IOException("Search result is missing source_song_id");
-        String raw = new String(httpGetBytes("https://lrclib.net/api/get/" + urlEncode(sourceId)), StandardCharsets.UTF_8);
+        String raw = new String(httpGetSearchBytes("https://lrclib.net/api/get/" + urlEncode(sourceId)), StandardCharsets.UTF_8);
         JSONObject data = new JSONObject(raw);
         String original = data.optString("syncedLyrics", "");
         if (original.trim().isEmpty()) original = data.optString("plainLyrics", "");
@@ -561,6 +592,53 @@ public class MainActivity extends Activity {
         preview.put("has_translation", false);
         preview.put("has_roman", false);
         return preview;
+    }
+
+    private JSONObject previewQq(JSONObject result) throws Exception {
+        String songMid = result.optString("source_song_id", "").trim();
+        if (songMid.isEmpty()) throw new IOException("Search result is missing source_song_id");
+        StringBuilder query = new StringBuilder();
+        appendQuery(query, "songmid", songMid);
+        appendQuery(query, "g_tk", "5381");
+        appendQuery(query, "format", "json");
+        appendQuery(query, "nobase64", "1");
+        String url = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?" + query;
+        String raw = new String(httpGetSearchBytes(url, qqHeaders()), StandardCharsets.UTF_8);
+        JSONObject data = new JSONObject(raw);
+        String original = data.optString("lyric", "");
+        String translation = data.optString("trans", "");
+        String roman = data.optString("roma", "");
+        JSONObject preview = new JSONObject();
+        preview.put("result", result);
+        preview.put("original_lrc", original);
+        preview.put("translation_lrc", translation);
+        preview.put("roman_lrc", roman);
+        preview.put("line_rows", alignLrcSources(original, translation, roman));
+        preview.put("has_translation", !translation.trim().isEmpty());
+        preview.put("has_roman", !roman.trim().isEmpty());
+        return preview;
+    }
+
+    private JSONArray mergeSearchResults(JSONArray first, JSONArray second) throws Exception {
+        JSONArray merged = new JSONArray();
+        for (int source = 0; source < 2; source++) {
+            JSONArray items = source == 0 ? first : second;
+            for (int index = 0; index < items.length(); index++) {
+                JSONObject candidate = items.optJSONObject(index);
+                if (candidate == null) continue;
+                String key = candidate.optString("provider", "") + ":" + candidate.optString("source_song_id", "");
+                boolean seen = false;
+                for (int existingIndex = 0; existingIndex < merged.length(); existingIndex++) {
+                    JSONObject existing = merged.optJSONObject(existingIndex);
+                    if (existing != null && key.equals(existing.optString("provider", "") + ":" + existing.optString("source_song_id", ""))) {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (!seen) merged.put(candidate);
+            }
+        }
+        return merged;
     }
 
     private JSONObject handleWorkspaceSavePost(String name, JSONObject payload) throws Exception {
@@ -949,7 +1027,7 @@ public class MainActivity extends Activity {
                 } else {
                     importLyricsUri(uri, songName, displayName);
                 }
-                emitImport(kind, "done", "已导入：" + songName);
+                emitImport(kind, "done", "已导入：" + songName, songName);
             } catch (Exception error) {
                 emitImport(kind, "failed", "导入失败：" + error.getMessage());
             }
@@ -1182,6 +1260,14 @@ public class MainActivity extends Activity {
 
     private String urlEncode(String value) throws Exception {
         return URLEncoder.encode(value == null ? "" : value, "UTF-8").replace("+", "%20");
+    }
+
+    private String firstNonEmpty(String... values) {
+        for (String value : values) {
+            String text = value == null ? "" : value.trim();
+            if (!text.isEmpty()) return text;
+        }
+        return "";
     }
 
     private JSONArray modelItems(String content) throws Exception {
@@ -1514,6 +1600,10 @@ public class MainActivity extends Activity {
     }
 
     private void emitImport(String kind, String status, String message) {
+        emitImport(kind, status, message, "");
+    }
+
+    private void emitImport(String kind, String status, String message, String songName) {
         try {
             JSONObject detail = new JSONObject();
             detail.put("channel", "import");
@@ -1521,6 +1611,7 @@ public class MainActivity extends Activity {
             detail.put("status", status);
             detail.put("progress", "done".equals(status) ? 100 : 0);
             detail.put("message", message);
+            detail.put("song_name", songName == null ? "" : songName);
             String script = "window.dispatchEvent(new CustomEvent('utapractice-android', { detail: " + detail + " }));";
             runOnUiThread(() -> webView.evaluateJavascript(script, null));
         } catch (Exception ignored) {
@@ -1546,9 +1637,13 @@ public class MainActivity extends Activity {
     }
 
     private HttpResult httpRequest(String method, String urlText, String body, Map<String, String> extraHeaders) throws IOException {
+        return httpRequest(method, urlText, body, extraHeaders, 10000, 120000);
+    }
+
+    private HttpResult httpRequest(String method, String urlText, String body, Map<String, String> extraHeaders, int connectTimeoutMs, int readTimeoutMs) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(urlText).openConnection();
-        connection.setConnectTimeout(10000);
-        connection.setReadTimeout(120000);
+        connection.setConnectTimeout(connectTimeoutMs);
+        connection.setReadTimeout(readTimeoutMs);
         connection.setRequestProperty("User-Agent", "utapractice-android");
         if (extraHeaders != null) {
             for (Map.Entry<String, String> entry : extraHeaders.entrySet()) {
@@ -1582,6 +1677,20 @@ public class MainActivity extends Activity {
 
     private byte[] httpGetBytes(String urlText) throws IOException {
         return httpGet(urlText).bytes;
+    }
+
+    private byte[] httpGetSearchBytes(String urlText) throws IOException {
+        return httpGetSearchBytes(urlText, null);
+    }
+
+    private byte[] httpGetSearchBytes(String urlText, Map<String, String> headers) throws IOException {
+        return httpRequest("GET", urlText, null, headers, SEARCH_TIMEOUT_MS, SEARCH_TIMEOUT_MS).bytes;
+    }
+
+    private Map<String, String> qqHeaders() {
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Referer", "https://y.qq.com/");
+        return headers;
     }
 
     private byte[] readAll(InputStream input) throws IOException {

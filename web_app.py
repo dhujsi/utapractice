@@ -11,7 +11,7 @@ import base64
 import html
 from html.parser import HTMLParser
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.parse import urlencode
@@ -34,6 +34,9 @@ DEFAULT_MODEL = "deepseek-v4-pro"
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".m4a"}
 LYRICS_EXTENSIONS = {".json", ".lrc"}
+SEARCH_HTTP_TIMEOUT_SECONDS = 4
+SEARCH_PROVIDER_TIMEOUT_SECONDS = 4
+SEARCH_AGGREGATE_TIMEOUT_SECONDS = 6
 
 SONG_DIR.mkdir(exist_ok=True)
 ARCHIVE_DIR.mkdir(exist_ok=True)
@@ -397,7 +400,7 @@ def write_json_path(path, payload):
         json.dump(payload, f, indent=2, ensure_ascii=False)
 
 
-def fetch_json(url, headers=None, timeout=10):
+def fetch_json(url, headers=None, timeout=SEARCH_HTTP_TIMEOUT_SECONDS):
     request = Request(url, headers={"User-Agent": "Mozilla/5.0 utapractice", **(headers or {})})
     with urlopen(request, timeout=timeout) as response:
         data = response.read().decode("utf-8", errors="replace")
@@ -492,9 +495,22 @@ def rank_search_result(item, song_name, artist="", album="", duration=None, sour
     return round(min(score, 1), 4)
 
 
-def search_lrclib(song_name, artist="", album=""):
-    query = {"track_name": song_name, "artist_name": artist, "album_name": album}
-    data = fetch_json(f"https://lrclib.net/api/search?{urlencode({k: v for k, v in query.items() if v})}")
+def merge_search_results(*result_sets, limit=None):
+    merged = []
+    seen = set()
+    for results in result_sets:
+        for item in results:
+            key = (item.get("provider"), item.get("source_song_id"))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+            if limit and len(merged) >= limit:
+                return merged
+    return merged
+
+
+def normalize_lrclib_results(data):
     results = []
     for item in data[:10]:
         has_synced = bool(item.get("syncedLyrics"))
@@ -516,10 +532,30 @@ def search_lrclib(song_name, artist="", album=""):
     return results
 
 
+def search_lrclib(song_name, artist="", album=""):
+    broad_query = " ".join(part for part in [song_name, artist] if part).strip()
+    exact_query = {k: v for k, v in {"track_name": song_name, "artist_name": artist, "album_name": album}.items() if v}
+    result_sets = []
+    if artist or album:
+        exact_data = fetch_json(
+            f"https://lrclib.net/api/search?{urlencode(exact_query)}",
+            timeout=SEARCH_PROVIDER_TIMEOUT_SECONDS,
+        )
+        result_sets.append(normalize_lrclib_results(exact_data))
+    if not result_sets or not result_sets[0]:
+        broad_url = "https://lrclib.net/api/search?" + urlencode({"q": broad_query})
+        broad_data = fetch_json(
+            broad_url,
+            timeout=SEARCH_PROVIDER_TIMEOUT_SECONDS,
+        )
+        result_sets.append(normalize_lrclib_results(broad_data))
+    return merge_search_results(*result_sets, limit=10)
+
+
 def search_netease(song_name, artist="", album=""):
     keyword = " ".join(part for part in [song_name, artist] if part)
     url = "https://music.163.com/api/search/get/web?" + urlencode({"s": keyword, "type": 1, "offset": 0, "limit": 10})
-    data = fetch_json(url, headers={"Referer": "https://music.163.com/"})
+    data = fetch_json(url, headers={"Referer": "https://music.163.com/"}, timeout=SEARCH_PROVIDER_TIMEOUT_SECONDS)
     songs = data.get("result", {}).get("songs", []) if isinstance(data, dict) else []
     results = []
     for item in songs:
@@ -543,26 +579,29 @@ def search_netease(song_name, artist="", album=""):
 
 def search_qq(song_name, artist="", album=""):
     keyword = " ".join(part for part in [song_name, artist] if part)
-    url = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?" + urlencode(
-        {"w": keyword, "format": "json", "p": 1, "n": 10, "cr": 1}
-    )
-    data = fetch_json(url, headers={"Referer": "https://y.qq.com/"})
-    songs = data.get("data", {}).get("song", {}).get("list", []) if isinstance(data, dict) else []
+    url = "https://c.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg?" + urlencode({"format": "json", "key": keyword})
+    data = fetch_json(url, headers={"Referer": "https://y.qq.com/"}, timeout=SEARCH_PROVIDER_TIMEOUT_SECONDS)
+    songs = data.get("data", {}).get("song", {}).get("itemlist", []) if isinstance(data, dict) else []
     results = []
     for item in songs:
-        artists = "/".join(artist_item.get("name", "") for artist_item in item.get("singer", []))
+        source_id = item.get("mid") or item.get("songmid")
+        if not source_id:
+            continue
+        artists = item.get("singer", "")
         results.append(
             normalize_search_result(
                 "qq",
-                item.get("songmid") or item.get("mid"),
-                item.get("songname") or item.get("name"),
+                source_id,
+                item.get("name") or item.get("songname"),
                 artists,
-                item.get("albumname") or item.get("album", {}).get("name", ""),
-                item.get("interval"),
+                item.get("albumname") or "",
+                None,
                 has_original=True,
                 has_translation=True,
                 has_roman=False,
                 has_word_timing=False,
+                qq_id=item.get("id"),
+                docid=item.get("docid"),
             )
         )
     return results
@@ -571,7 +610,7 @@ def search_qq(song_name, artist="", album=""):
 def search_kugou(song_name, artist="", album=""):
     keyword = " ".join(part for part in [song_name, artist] if part)
     url = "https://songsearch.kugou.com/song_search_v2?" + urlencode({"keyword": keyword, "page": 1, "pagesize": 10})
-    data = fetch_json(url)
+    data = fetch_json(url, timeout=SEARCH_PROVIDER_TIMEOUT_SECONDS)
     songs = data.get("data", {}).get("lists", []) if isinstance(data, dict) else []
     results = []
     for item in songs:
@@ -1775,10 +1814,17 @@ def api_lyrics_search():
         except Exception as exc:
             return provider_name, [], str(exc)
 
-    with ThreadPoolExecutor(max_workers=min(4, max(1, len(providers)))) as executor:
-        futures = [executor.submit(search_one, provider_name) for provider_name in providers]
-        for future in as_completed(futures):
-            provider_name, provider_results, error = future.result()
+    executor = ThreadPoolExecutor(max_workers=min(4, max(1, len(providers))))
+    futures = {provider_name: executor.submit(search_one, provider_name) for provider_name in providers}
+    future_providers = {future: provider_name for provider_name, future in futures.items()}
+    try:
+        for future in as_completed(futures.values(), timeout=SEARCH_AGGREGATE_TIMEOUT_SECONDS):
+            provider_name = future_providers[future]
+            try:
+                provider_name, provider_results, error = future.result(timeout=SEARCH_PROVIDER_TIMEOUT_SECONDS)
+            except Exception as exc:
+                errors[provider_name] = str(exc)
+                continue
             if error:
                 errors[provider_name] = error
                 continue
@@ -1789,6 +1835,14 @@ def api_lyrics_search():
                 item["_provider_priority"] = PROVIDER_PRIORITY.get(item.get("provider"), 99)
                 item["_source_order"] = source_order
                 results.append(item)
+    except FuturesTimeoutError:
+        pass
+    finally:
+        for provider_name, future in futures.items():
+            if not future.done():
+                future.cancel()
+                errors[provider_name] = "Timed out"
+        executor.shutdown(wait=False, cancel_futures=True)
 
     seen = set()
     deduped = []

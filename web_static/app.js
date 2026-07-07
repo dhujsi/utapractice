@@ -229,10 +229,15 @@ window.addEventListener("utapractice-android", async (event) => {
     const statusEl = isLyrics ? els.lyricsUploadStatus : els.audioUploadStatus;
     const button = isLyrics ? els.lyricsUploadButton : els.audioUploadButton;
     const level = detail.status === "done" ? "success" : detail.status === "failed" ? "error" : "";
+    const previousCurrent = state.current?.name || "";
     setUploadStatus(statusEl, detail.message || "", level);
     if (["done", "failed", "cancelled"].includes(detail.status)) {
       if (button) button.disabled = false;
-      await loadSongs().catch(() => {});
+      if (detail.status === "done") {
+        await refreshSongsAfterLibraryMutation(detail.song_name || previousCurrent).catch(() => {});
+      } else {
+        await loadSongs().catch(() => {});
+      }
     }
   }
   if (detail.channel === "sync" && detail.status === "done") {
@@ -645,6 +650,13 @@ async function loadSong(name) {
   renderLibraryInfo();
 }
 
+async function refreshSongsAfterLibraryMutation(affectedName = "") {
+  const previousCurrent = state.current?.name || "";
+  await loadSongs();
+  const reloadName = [affectedName, previousCurrent].find((name) => name && state.songs.some((song) => song.name === name));
+  if (reloadName) await loadSong(reloadName);
+}
+
 function highlightCurrentLyric() {
   if (!state.current?.has_audio) return;
   const currentTime = els.audio.currentTime;
@@ -700,7 +712,7 @@ async function uploadFiles({ input, fieldName, url, statusEl, button, formFields
   try {
     const result = await requestJson(url, { method: "POST", body: data });
     input.value = "";
-    await loadSongs();
+    await refreshSongsAfterLibraryMutation(result.song_name || formFields.target_song || formFields.song_name);
     const count = Array.isArray(result.saved) ? result.saved.length : files.length;
     setUploadStatus(statusEl, `上传完成：${count} 个文件`, "success");
     showToast(successMessage);
@@ -802,7 +814,7 @@ async function saveLyricsText() {
       method: "POST",
       body: JSON.stringify({ target_song, song_name, lyrics_text, lyrics_type }),
     });
-    await loadSongs();
+    await refreshSongsAfterLibraryMutation(result.song_name || target_song || song_name);
     setUploadStatus(els.lyricsTextStatus, `已保存：${result.song_name}`, "success");
     showToast("歌词已保存");
   } catch (error) {
