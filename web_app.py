@@ -34,9 +34,9 @@ DEFAULT_MODEL = "deepseek-v4-pro"
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".m4a"}
 LYRICS_EXTENSIONS = {".json", ".lrc"}
-SEARCH_HTTP_TIMEOUT_SECONDS = 4
-SEARCH_PROVIDER_TIMEOUT_SECONDS = 4
-SEARCH_AGGREGATE_TIMEOUT_SECONDS = 6
+SEARCH_HTTP_TIMEOUT_SECONDS = 6
+SEARCH_PROVIDER_TIMEOUT_SECONDS = 6
+SEARCH_AGGREGATE_TIMEOUT_SECONDS = 7
 
 SONG_DIR.mkdir(exist_ok=True)
 ARCHIVE_DIR.mkdir(exist_ok=True)
@@ -535,20 +535,18 @@ def normalize_lrclib_results(data):
 def search_lrclib(song_name, artist="", album=""):
     broad_query = " ".join(part for part in [song_name, artist] if part).strip()
     exact_query = {k: v for k, v in {"track_name": song_name, "artist_name": artist, "album_name": album}.items() if v}
-    result_sets = []
-    if artist or album:
+    broad_url = "https://lrclib.net/api/search?" + urlencode({"q": broad_query})
+    broad_data = fetch_json(
+        broad_url,
+        timeout=SEARCH_PROVIDER_TIMEOUT_SECONDS,
+    )
+    result_sets = [normalize_lrclib_results(broad_data)]
+    if not result_sets or not result_sets[0]:
         exact_data = fetch_json(
             f"https://lrclib.net/api/search?{urlencode(exact_query)}",
             timeout=SEARCH_PROVIDER_TIMEOUT_SECONDS,
         )
         result_sets.append(normalize_lrclib_results(exact_data))
-    if not result_sets or not result_sets[0]:
-        broad_url = "https://lrclib.net/api/search?" + urlencode({"q": broad_query})
-        broad_data = fetch_json(
-            broad_url,
-            timeout=SEARCH_PROVIDER_TIMEOUT_SECONDS,
-        )
-        result_sets.append(normalize_lrclib_results(broad_data))
     return merge_search_results(*result_sets, limit=10)
 
 

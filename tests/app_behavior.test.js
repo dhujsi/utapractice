@@ -240,9 +240,9 @@ test("APK can search and preview LRCLIB without the optional sync backend", () =
 });
 
 test("web lyric search uses resilient provider calls instead of hanging on slow or broken sources", () => {
-  assert.match(webApp, /SEARCH_PROVIDER_TIMEOUT_SECONDS\s*=\s*4/);
-  assert.match(webApp, /SEARCH_AGGREGATE_TIMEOUT_SECONDS\s*=\s*6/);
-  assert.match(webApp, /SEARCH_HTTP_TIMEOUT_SECONDS\s*=\s*4/);
+  assert.match(webApp, /SEARCH_PROVIDER_TIMEOUT_SECONDS\s*=\s*6/);
+  assert.match(webApp, /SEARCH_AGGREGATE_TIMEOUT_SECONDS\s*=\s*7/);
+  assert.match(webApp, /SEARCH_HTTP_TIMEOUT_SECONDS\s*=\s*6/);
   assert.match(webApp, /def search_lrclib\(song_name, artist="", album=""\):[\s\S]*"q": broad_query/);
   assert.match(webApp, /def merge_search_results\(/);
   assert.match(webApp, /def search_qq\(song_name, artist="", album=""\):[\s\S]*smartbox_new\.fcg/);
@@ -262,6 +262,8 @@ test("lyrics and audio library mutations reload the affected song before playbac
 });
 
 test("APK lyric search can use QQ locally without the optional sync backend", () => {
+  assert.match(androidMain, /SEARCH_TIMEOUT_MS = 6000/);
+  assert.match(androidMain, /appendQuery\(broad, "q", \(songName \+ " " \+ artist\)\.trim\(\)\)/);
   assert.match(androidMain, /private JSONArray searchQq\(/);
   assert.match(androidMain, /private JSONObject previewQq\(/);
   assert.match(androidMain, /smartbox_new\.fcg/);

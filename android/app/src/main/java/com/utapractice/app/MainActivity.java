@@ -53,7 +53,7 @@ public class MainActivity extends Activity {
     private static final String KEY_LAST_SYNC = "last_sync";
     private static final int REQUEST_IMPORT_AUDIO = 4101;
     private static final int REQUEST_IMPORT_LYRICS = 4102;
-    private static final int SEARCH_TIMEOUT_MS = 4000;
+    private static final int SEARCH_TIMEOUT_MS = 6000;
 
     private WebView webView;
     private SharedPreferences prefs;
@@ -498,20 +498,16 @@ public class MainActivity extends Activity {
     }
 
     private JSONArray searchLrclib(String songName, String artist, String album) throws Exception {
-        StringBuilder query = new StringBuilder();
-        if (!artist.trim().isEmpty() || !album.trim().isEmpty()) {
-            appendQuery(query, "track_name", songName);
-            appendQuery(query, "artist_name", artist);
-            appendQuery(query, "album_name", album);
-        } else {
-            appendQuery(query, "q", songName);
-        }
-        String raw = new String(httpGetSearchBytes("https://lrclib.net/api/search?" + query), StandardCharsets.UTF_8);
+        StringBuilder broad = new StringBuilder();
+        appendQuery(broad, "q", (songName + " " + artist).trim());
+        String raw = new String(httpGetSearchBytes("https://lrclib.net/api/search?" + broad), StandardCharsets.UTF_8);
         JSONArray items = new JSONArray(raw);
         if (items.length() == 0 && (!artist.trim().isEmpty() || !album.trim().isEmpty())) {
-            StringBuilder broad = new StringBuilder();
-            appendQuery(broad, "q", (songName + " " + artist).trim());
-            items = new JSONArray(new String(httpGetSearchBytes("https://lrclib.net/api/search?" + broad), StandardCharsets.UTF_8));
+            StringBuilder exact = new StringBuilder();
+            appendQuery(exact, "track_name", songName);
+            appendQuery(exact, "artist_name", artist);
+            appendQuery(exact, "album_name", album);
+            items = new JSONArray(new String(httpGetSearchBytes("https://lrclib.net/api/search?" + exact), StandardCharsets.UTF_8));
         }
         JSONArray results = new JSONArray();
         int count = Math.min(items.length(), 20);
