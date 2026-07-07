@@ -261,14 +261,27 @@ test("lyrics and audio library mutations reload the affected song before playbac
   assert.match(appJs, /refreshSongsAfterLibraryMutation\(detail\.song_name \|\| previousCurrent\)/);
 });
 
-test("APK lyric search can use QQ locally without the optional sync backend", () => {
+test("APK lyric search mirrors all web providers without the optional sync backend", () => {
   assert.match(androidMain, /SEARCH_TIMEOUT_MS = 6000/);
+  assert.match(androidMain, /SEARCH_AGGREGATE_TIMEOUT_MS = 7000/);
+  assert.match(androidMain, /Executors\.newFixedThreadPool\(Math\.min\(4, providers\.size\(\)\)\)/);
+  assert.match(androidMain, /entry\.getValue\(\)\.get\(remaining, TimeUnit\.MILLISECONDS\)/);
   assert.match(androidMain, /appendQuery\(broad, "q", \(songName \+ " " \+ artist\)\.trim\(\)\)/);
+  assert.match(androidMain, /private JSONArray searchNetease\(/);
   assert.match(androidMain, /private JSONArray searchQq\(/);
+  assert.match(androidMain, /private JSONArray searchKugou\(/);
+  assert.match(androidMain, /private JSONObject previewNetease\(/);
   assert.match(androidMain, /private JSONObject previewQq\(/);
+  assert.match(androidMain, /private JSONObject previewKugou\(/);
+  assert.match(androidMain, /music\.163\.com\/api\/search\/get\/web/);
+  assert.match(androidMain, /music\.163\.com\/api\/song\/lyric/);
   assert.match(androidMain, /smartbox_new\.fcg/);
   assert.match(androidMain, /fcg_query_lyric_new\.fcg/);
+  assert.match(androidMain, /songsearch\.kugou\.com\/song_search_v2/);
+  assert.match(androidMain, /lyrics\.kugou\.com\/download/);
   assert.match(androidMain, /mergeSearchResults\(/);
+  assert.match(androidMain, /"netease"\.equals\(provider\)/);
   assert.match(androidMain, /"qq"\.equals\(provider\)/);
+  assert.match(androidMain, /"kugou"\.equals\(provider\)/);
   assert.doesNotMatch(androidMain, /暂只支持 LRCLIB/);
 });

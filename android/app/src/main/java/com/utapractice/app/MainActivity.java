@@ -38,10 +38,18 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.UUID;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -54,6 +62,7 @@ public class MainActivity extends Activity {
     private static final int REQUEST_IMPORT_AUDIO = 4101;
     private static final int REQUEST_IMPORT_LYRICS = 4102;
     private static final int SEARCH_TIMEOUT_MS = 6000;
+    private static final int SEARCH_AGGREGATE_TIMEOUT_MS = 7000;
 
     private WebView webView;
     private SharedPreferences prefs;
@@ -468,21 +477,26 @@ public class MainActivity extends Activity {
         JSONObject errors = new JSONObject();
         JSONArray results = new JSONArray();
         boolean aggregate = provider.isEmpty() || "aggregate".equals(provider);
-        if (aggregate || "lrclib".equals(provider)) {
+        List<String> providers = new ArrayList<>();
+        if (aggregate) {
+            providers.add("lrclib");
+            providers.add("netease");
+            providers.add("qq");
+            providers.add("kugou");
+        } else if (isApkSearchProvider(provider)) {
+            providers.add(provider);
+        } else {
+            errors.put(provider, "未知歌词源");
+        }
+        if (aggregate) {
+            results = searchProvidersConcurrently(providers, songName, artist, album, errors);
+        } else if (!providers.isEmpty()) {
             try {
-                results = mergeSearchResults(results, searchLrclib(songName, artist, album));
+                results = searchProvider(providers.get(0), songName, artist, album);
             } catch (Exception error) {
-                errors.put("lrclib", error.getMessage());
+                errors.put(providers.get(0), error.getMessage());
             }
         }
-        if (aggregate || "qq".equals(provider)) {
-            try {
-                results = mergeSearchResults(results, searchQq(songName, artist, album));
-            } catch (Exception error) {
-                errors.put("qq", error.getMessage());
-            }
-        }
-        if (!aggregate && !"lrclib".equals(provider) && !"qq".equals(provider)) errors.put(provider, "未知歌词源");
         result.put("results", results);
         result.put("errors", errors);
         return result;
@@ -493,8 +507,50 @@ public class MainActivity extends Activity {
         if (result == null) result = payload;
         String provider = result.optString("provider", "");
         if ("lrclib".equals(provider)) return previewLrclib(result);
+        if ("netease".equals(provider)) return previewNetease(result);
         if ("qq".equals(provider)) return previewQq(result);
+        if ("kugou".equals(provider)) return previewKugou(result);
         throw new IOException("未知歌词源");
+    }
+
+    private boolean isApkSearchProvider(String provider) {
+        return "lrclib".equals(provider) || "netease".equals(provider) || "qq".equals(provider) || "kugou".equals(provider);
+    }
+
+    private JSONArray searchProvider(String provider, String songName, String artist, String album) throws Exception {
+        if ("lrclib".equals(provider)) return searchLrclib(songName, artist, album);
+        if ("netease".equals(provider)) return searchNetease(songName, artist, album);
+        if ("qq".equals(provider)) return searchQq(songName, artist, album);
+        if ("kugou".equals(provider)) return searchKugou(songName, artist, album);
+        throw new IOException("未知歌词源");
+    }
+
+    private JSONArray searchProvidersConcurrently(List<String> providers, String songName, String artist, String album, JSONObject errors) throws Exception {
+        JSONArray results = new JSONArray();
+        if (providers.isEmpty()) return results;
+        ExecutorService executor = Executors.newFixedThreadPool(Math.min(4, providers.size()));
+        Map<String, Future<JSONArray>> futures = new LinkedHashMap<>();
+        try {
+            for (String provider : providers) {
+                Callable<JSONArray> task = () -> searchProvider(provider, songName, artist, album);
+                futures.put(provider, executor.submit(task));
+            }
+            long deadline = System.currentTimeMillis() + SEARCH_AGGREGATE_TIMEOUT_MS;
+            for (Map.Entry<String, Future<JSONArray>> entry : futures.entrySet()) {
+                long remaining = Math.max(1, deadline - System.currentTimeMillis());
+                try {
+                    results = mergeSearchResults(results, entry.getValue().get(remaining, TimeUnit.MILLISECONDS));
+                } catch (TimeoutException error) {
+                    entry.getValue().cancel(true);
+                    errors.put(entry.getKey(), "Timed out");
+                } catch (Exception error) {
+                    errors.put(entry.getKey(), error.getMessage());
+                }
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+        return results;
     }
 
     private JSONArray searchLrclib(String songName, String artist, String album) throws Exception {
@@ -528,6 +584,52 @@ public class MainActivity extends Activity {
             row.put("has_word_timing", false);
             row.put("score", hasSynced ? 1 : 0.6);
             row.put("match_hint", "lrclib · " + row.optString("artist", "unknown"));
+            row.put("source_data", new JSONObject());
+            results.put(row);
+        }
+        return results;
+    }
+
+    private JSONArray searchNetease(String songName, String artist, String album) throws Exception {
+        String keyword = (songName + " " + artist).trim();
+        StringBuilder query = new StringBuilder();
+        appendQuery(query, "s", keyword);
+        appendQuery(query, "type", "1");
+        appendQuery(query, "offset", "0");
+        appendQuery(query, "limit", "10");
+        String url = "https://music.163.com/api/search/get/web?" + query;
+        String raw = new String(httpGetSearchBytes(url, neteaseHeaders()), StandardCharsets.UTF_8);
+        JSONObject data = new JSONObject(raw);
+        JSONObject result = data.optJSONObject("result");
+        JSONArray songs = result == null ? new JSONArray() : result.optJSONArray("songs");
+        if (songs == null) songs = new JSONArray();
+
+        JSONArray results = new JSONArray();
+        int count = Math.min(songs.length(), 20);
+        for (int index = 0; index < count; index++) {
+            JSONObject item = songs.optJSONObject(index);
+            if (item == null) continue;
+            Object sourceId = item.opt("id");
+            if (sourceId == null || JSONObject.NULL.equals(sourceId)) continue;
+            JSONObject albumObject = item.optJSONObject("album");
+            JSONObject row = new JSONObject();
+            row.put("provider", "netease");
+            row.put("source_song_id", String.valueOf(sourceId));
+            row.put("title", item.optString("name", ""));
+            row.put("artist", joinArtistNames(item.optJSONArray("artists")));
+            row.put("album", albumObject == null ? "" : albumObject.optString("name", ""));
+            long durationMs = item.optLong("duration", 0);
+            if (durationMs > 0) {
+                row.put("duration", Math.round(durationMs / 1000.0));
+            } else {
+                row.put("duration", JSONObject.NULL);
+            }
+            row.put("has_original", true);
+            row.put("has_translation", true);
+            row.put("has_roman", false);
+            row.put("has_word_timing", false);
+            row.put("score", JSONObject.NULL);
+            row.put("match_hint", "netease · " + row.optString("artist", "unknown"));
             row.put("source_data", new JSONObject());
             results.put(row);
         }
@@ -572,6 +674,52 @@ public class MainActivity extends Activity {
         return results;
     }
 
+    private JSONArray searchKugou(String songName, String artist, String album) throws Exception {
+        String keyword = (songName + " " + artist).trim();
+        StringBuilder query = new StringBuilder();
+        appendQuery(query, "keyword", keyword);
+        appendQuery(query, "page", "1");
+        appendQuery(query, "pagesize", "10");
+        String url = "https://songsearch.kugou.com/song_search_v2?" + query;
+        String raw = new String(httpGetSearchBytes(url), StandardCharsets.UTF_8);
+        JSONObject data = new JSONObject(raw);
+        JSONObject dataObject = data.optJSONObject("data");
+        JSONArray songs = dataObject == null ? new JSONArray() : dataObject.optJSONArray("lists");
+        if (songs == null) songs = new JSONArray();
+
+        JSONArray results = new JSONArray();
+        int count = Math.min(songs.length(), 20);
+        for (int index = 0; index < count; index++) {
+            JSONObject item = songs.optJSONObject(index);
+            if (item == null) continue;
+            String fileHash = firstNonEmpty(item.optString("FileHash", ""), item.optString("Hash", ""));
+            if (fileHash.isEmpty()) continue;
+            JSONObject sourceData = new JSONObject();
+            sourceData.put("album_id", item.opt("AlbumID"));
+            sourceData.put("file_hash", fileHash);
+            JSONObject row = new JSONObject();
+            row.put("provider", "kugou");
+            row.put("source_song_id", fileHash);
+            row.put("title", item.optString("SongName", ""));
+            row.put("artist", item.optString("SingerName", ""));
+            row.put("album", item.optString("AlbumName", ""));
+            if (item.has("Duration")) {
+                row.put("duration", item.opt("Duration"));
+            } else {
+                row.put("duration", JSONObject.NULL);
+            }
+            row.put("has_original", true);
+            row.put("has_translation", false);
+            row.put("has_roman", false);
+            row.put("has_word_timing", false);
+            row.put("score", JSONObject.NULL);
+            row.put("match_hint", "kugou · " + row.optString("artist", "unknown"));
+            row.put("source_data", sourceData);
+            results.put(row);
+        }
+        return results;
+    }
+
     private JSONObject previewLrclib(JSONObject result) throws Exception {
         String sourceId = result.optString("source_song_id", "").trim();
         if (sourceId.isEmpty()) throw new IOException("Search result is missing source_song_id");
@@ -579,15 +727,25 @@ public class MainActivity extends Activity {
         JSONObject data = new JSONObject(raw);
         String original = data.optString("syncedLyrics", "");
         if (original.trim().isEmpty()) original = data.optString("plainLyrics", "");
-        JSONObject preview = new JSONObject();
-        preview.put("result", result);
-        preview.put("original_lrc", original);
-        preview.put("translation_lrc", "");
-        preview.put("roman_lrc", "");
-        preview.put("line_rows", alignLrcSources(original, "", ""));
-        preview.put("has_translation", false);
-        preview.put("has_roman", false);
-        return preview;
+        return previewPayload(result, original, "", "");
+    }
+
+    private JSONObject previewNetease(JSONObject result) throws Exception {
+        String sourceId = result.optString("source_song_id", "").trim();
+        if (sourceId.isEmpty()) throw new IOException("Search result is missing source_song_id");
+        StringBuilder query = new StringBuilder();
+        appendQuery(query, "id", sourceId);
+        appendQuery(query, "lv", "1");
+        appendQuery(query, "kv", "1");
+        appendQuery(query, "tv", "-1");
+        appendQuery(query, "rv", "1");
+        String url = "https://music.163.com/api/song/lyric?" + query;
+        String raw = new String(httpGetSearchBytes(url, neteaseHeaders()), StandardCharsets.UTF_8);
+        JSONObject data = new JSONObject(raw);
+        String original = optObjectString(data, "lrc", "lyric");
+        String translation = optObjectString(data, "tlyric", "lyric");
+        String roman = optObjectString(data, "romalrc", "lyric");
+        return previewPayload(result, original, translation, roman);
     }
 
     private JSONObject previewQq(JSONObject result) throws Exception {
@@ -604,14 +762,60 @@ public class MainActivity extends Activity {
         String original = data.optString("lyric", "");
         String translation = data.optString("trans", "");
         String roman = data.optString("roma", "");
+        return previewPayload(result, original, translation, roman);
+    }
+
+    private JSONObject previewKugou(JSONObject result) throws Exception {
+        JSONObject source = result.optJSONObject("source_data");
+        if (source == null) source = new JSONObject();
+        String keyword = (result.optString("title", "") + " " + result.optString("artist", "")).trim();
+        String fileHash = firstNonEmpty(source.optString("file_hash", ""), result.optString("source_song_id", ""));
+        StringBuilder searchQuery = new StringBuilder();
+        appendQuery(searchQuery, "ver", "1");
+        appendQuery(searchQuery, "man", "yes");
+        appendQuery(searchQuery, "client", "pc");
+        appendQuery(searchQuery, "keyword", keyword);
+        appendQuery(searchQuery, "duration", result.optString("duration", "0"));
+        appendQuery(searchQuery, "hash", fileHash);
+        String searchUrl = "https://lyrics.kugou.com/search?" + searchQuery;
+        String searchRaw = new String(httpGetSearchBytes(searchUrl), StandardCharsets.UTF_8);
+        JSONObject searchData = new JSONObject(searchRaw);
+        JSONArray candidates = searchData.optJSONArray("candidates");
+        if (candidates == null || candidates.length() == 0) return previewPayload(result, "", "", "");
+        JSONObject candidate = candidates.optJSONObject(0);
+        if (candidate == null) return previewPayload(result, "", "", "");
+
+        StringBuilder downloadQuery = new StringBuilder();
+        appendQuery(downloadQuery, "ver", "1");
+        appendQuery(downloadQuery, "client", "pc");
+        appendQuery(downloadQuery, "id", candidate.optString("id", ""));
+        appendQuery(downloadQuery, "accesskey", candidate.optString("accesskey", ""));
+        appendQuery(downloadQuery, "fmt", "lrc");
+        appendQuery(downloadQuery, "charset", "utf8");
+        String downloadUrl = "https://lyrics.kugou.com/download?" + downloadQuery;
+        String downloadRaw = new String(httpGetSearchBytes(downloadUrl), StandardCharsets.UTF_8);
+        JSONObject data = new JSONObject(downloadRaw);
+        String encoded = data.optString("content", "");
+        String lyric = "";
+        if (!encoded.trim().isEmpty()) {
+            try {
+                lyric = new String(Base64.decode(encoded, Base64.DEFAULT), StandardCharsets.UTF_8);
+            } catch (Exception ignored) {
+                lyric = "";
+            }
+        }
+        return previewPayload(result, lyric, "", "");
+    }
+
+    private JSONObject previewPayload(JSONObject result, String original, String translation, String roman) throws Exception {
         JSONObject preview = new JSONObject();
         preview.put("result", result);
-        preview.put("original_lrc", original);
-        preview.put("translation_lrc", translation);
-        preview.put("roman_lrc", roman);
-        preview.put("line_rows", alignLrcSources(original, translation, roman));
-        preview.put("has_translation", !translation.trim().isEmpty());
-        preview.put("has_roman", !roman.trim().isEmpty());
+        preview.put("original_lrc", original == null ? "" : original);
+        preview.put("translation_lrc", translation == null ? "" : translation);
+        preview.put("roman_lrc", roman == null ? "" : roman);
+        preview.put("line_rows", alignLrcSources(preview.optString("original_lrc", ""), preview.optString("translation_lrc", ""), preview.optString("roman_lrc", "")));
+        preview.put("has_translation", !preview.optString("translation_lrc", "").trim().isEmpty());
+        preview.put("has_roman", !preview.optString("roman_lrc", "").trim().isEmpty());
         return preview;
     }
 
@@ -1266,6 +1470,25 @@ public class MainActivity extends Activity {
         return "";
     }
 
+    private String joinArtistNames(JSONArray artists) {
+        if (artists == null) return "";
+        StringBuilder names = new StringBuilder();
+        for (int index = 0; index < artists.length(); index++) {
+            JSONObject artist = artists.optJSONObject(index);
+            if (artist == null) continue;
+            String name = artist.optString("name", "").trim();
+            if (name.isEmpty()) continue;
+            if (names.length() > 0) names.append('/');
+            names.append(name);
+        }
+        return names.toString();
+    }
+
+    private String optObjectString(JSONObject parent, String objectKey, String valueKey) {
+        JSONObject object = parent == null ? null : parent.optJSONObject(objectKey);
+        return object == null ? "" : object.optString(valueKey, "");
+    }
+
     private JSONArray modelItems(String content) throws Exception {
         String text = content == null ? "" : content.trim();
         if (text.startsWith("```")) {
@@ -1686,6 +1909,12 @@ public class MainActivity extends Activity {
     private Map<String, String> qqHeaders() {
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put("Referer", "https://y.qq.com/");
+        return headers;
+    }
+
+    private Map<String, String> neteaseHeaders() {
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Referer", "https://music.163.com/");
         return headers;
     }
 
