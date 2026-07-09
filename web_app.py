@@ -3,6 +3,7 @@ import mimetypes
 import os
 import re
 import shutil
+import subprocess
 import threading
 import time
 import unicodedata
@@ -65,6 +66,7 @@ def handle_api_preflight():
 def apply_api_cors(response):
     return add_api_cors_headers(response)
 jobs_lock = threading.Lock()
+audio_probe_cache = {}
 
 
 def sanitize_filename(filename):
@@ -398,6 +400,72 @@ def read_json_path(path, default=None):
 def write_json_path(path, payload):
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
+
+
+def archive_song_file(source):
+    if not source:
+        return None
+    target = ARCHIVE_DIR / source.name
+    if target.exists():
+        target = ARCHIVE_DIR / f"{source.stem}_{int(time.time())}{source.suffix}"
+    shutil.move(str(source), str(target))
+    return target
+
+
+def ffprobe_audio_stream(audio_path):
+    try:
+        stat = audio_path.stat()
+    except OSError as exc:
+        return {"error": f"音频文件不可读：{exc}"}
+    cache_key = (str(audio_path), stat.st_size, stat.st_mtime_ns)
+    cached = audio_probe_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=codec_name,codec_tag_string,channels",
+        "-of",
+        "json",
+        str(audio_path),
+    ]
+    try:
+        completed = subprocess.run(command, check=True, capture_output=True, text=True, timeout=8)
+        data = json.loads(completed.stdout or "{}")
+        stream = (data.get("streams") or [{}])[0]
+    except FileNotFoundError:
+        stream = {"error": "服务器缺少 ffprobe，无法检查音频编码"}
+    except Exception as exc:
+        stream = {"error": f"音频编码检查失败：{exc}"}
+    audio_probe_cache[cache_key] = stream
+    return stream
+
+
+def audio_compatibility(audio_path):
+    if not audio_path:
+        return {"playable": False, "error": ""}
+    suffix = audio_path.suffix.lower()
+    if suffix in {".mp3", ".wav", ".flac"}:
+        return {"playable": True, "error": ""}
+    if suffix != ".m4a":
+        return {"playable": True, "error": ""}
+
+    stream = ffprobe_audio_stream(audio_path)
+    if stream.get("error"):
+        return {"playable": False, "error": stream["error"]}
+    codec_name = str(stream.get("codec_name") or "").lower()
+    codec_tag = str(stream.get("codec_tag_string") or "").lower()
+    channels = int(stream.get("channels") or 0)
+    if codec_name == "aac" and 0 < channels <= 2:
+        return {"playable": True, "error": ""}
+    codec_label = codec_name or codec_tag or "未知"
+    if codec_tag == "av3a":
+        codec_label = "av3a"
+    return {"playable": False, "error": f"音频格式不支持：{codec_label}，请替换音频"}
 
 
 def fetch_json(url, headers=None, timeout=SEARCH_HTTP_TIMEOUT_SECONDS):
@@ -1564,10 +1632,13 @@ def api_songs():
     for name in songs:
         info = db.get(name, {})
         song = songs[name]
+        audio_status = audio_compatibility(song["audio_path"]) if song["audio_path"] else {"playable": False, "error": ""}
         payload.append(
             {
                 "name": name,
                 "has_audio": song["audio_path"] is not None,
+                "audio_playable": audio_status["playable"],
+                "audio_error": audio_status["error"],
                 "has_lyrics": song["lyrics_path"] is not None,
                 "lyrics_type": song["lyrics_path"].suffix.lower()[1:] if song["lyrics_path"] else None,
                 "learned": bool(info.get("learned", False)),
@@ -1586,10 +1657,13 @@ def api_song(name):
 
     db = load_db()
     info = db.setdefault(name, {})
+    audio_status = audio_compatibility(song["audio_path"]) if song["audio_path"] else {"playable": False, "error": ""}
     return jsonify(
             {
                 "name": name,
                 "has_audio": song["audio_path"] is not None,
+                "audio_playable": audio_status["playable"],
+                "audio_error": audio_status["error"],
                 "has_lyrics": song["lyrics_path"] is not None,
                 "lyrics_type": song["lyrics_path"].suffix.lower()[1:] if song["lyrics_path"] else None,
                 "lyrics": read_lyrics(song["lyrics_path"]),
@@ -1607,6 +1681,10 @@ def api_audio(name):
         return jsonify({"error": "Song not found"}), 404
     if not song["audio_path"]:
         return jsonify({"error": "No audio for this song"}), 404
+
+    audio_status = audio_compatibility(song["audio_path"])
+    if not audio_status["playable"]:
+        return jsonify({"error": audio_status["error"]}), 415
 
     key_shift = int(request.args.get("key", 0))
     audio_path = song["audio_path"] if key_shift == 0 else shifted_audio_path(song["audio_path"], key_shift)
@@ -1656,10 +1734,7 @@ def api_delete_song(name):
         source = song[key]
         if not source:
             continue
-        target = ARCHIVE_DIR / source.name
-        if target.exists():
-            target = ARCHIVE_DIR / f"{source.stem}_{os.getpid()}{source.suffix}"
-        shutil.move(str(source), str(target))
+        archive_song_file(source)
 
     db = load_db()
     db.pop(name, None)
@@ -1682,7 +1757,7 @@ def api_upload_audio():
             return jsonify({"error": "Target lyric song not found"}), 404
         if not song["lyrics_path"]:
             return jsonify({"error": "Target song has no lyrics"}), 400
-        if song["audio_path"]:
+        if song["audio_path"] and audio_compatibility(song["audio_path"])["playable"]:
             return jsonify({"error": "Target song already has audio"}), 409
 
     for file in files:
@@ -1691,6 +1766,9 @@ def api_upload_audio():
         if suffix not in AUDIO_EXTENSIONS:
             return jsonify({"error": f"Unsupported audio file: {filename}"}), 400
         target = SONG_DIR / f"{target_song}{suffix}" if target_song else SONG_DIR / filename
+        if target_song and song["audio_path"]:
+            archive_song_file(song["audio_path"])
+            song["audio_path"] = None
         if target_song and target.exists():
             return jsonify({"error": "Target audio file already exists"}), 409
         file.save(target)

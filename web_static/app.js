@@ -406,10 +406,20 @@ function selectedFilesLabel(input) {
   return `${files.length} 个文件`;
 }
 
+function audioPlayable(song) {
+  return Boolean(song?.has_audio) && song.audio_playable !== false;
+}
+
+function audioStatusLabel(song) {
+  if (audioPlayable(song)) return "有音频";
+  if (song?.has_audio) return "音频格式不支持";
+  return "无音频";
+}
+
 function renderAudioTargetOptions() {
   if (!els.audioTargetSongSelect) return;
   const previous = els.audioTargetSongSelect.value;
-  const lyricOnlySongs = state.songs.filter((song) => song.has_lyrics && !song.has_audio);
+  const lyricOnlySongs = state.songs.filter((song) => song.has_lyrics && (!song.has_audio || !audioPlayable(song)));
 
   els.audioTargetSongSelect.innerHTML = "";
   const defaultOption = document.createElement("option");
@@ -421,14 +431,14 @@ function renderAudioTargetOptions() {
     const emptyOption = document.createElement("option");
     emptyOption.value = "";
     emptyOption.disabled = true;
-    emptyOption.textContent = "暂无无音频歌词";
+    emptyOption.textContent = "暂无无音频或需替换音频的歌词";
     els.audioTargetSongSelect.append(emptyOption);
   }
 
   for (const song of lyricOnlySongs) {
     const option = document.createElement("option");
     option.value = song.name;
-    option.textContent = song.name;
+    option.textContent = song.has_audio ? `${song.name}（替换不可播放音频）` : song.name;
     els.audioTargetSongSelect.append(option);
   }
 
@@ -498,7 +508,7 @@ function renderLibraryInfo() {
     els.libraryDeleteSong.disabled = true;
     return;
   }
-  els.librarySongInfo.textContent = `${song.has_audio ? "有音频" : "无音频"} · ${song.has_lyrics ? `${song.lyrics_type?.toUpperCase()} 歌词` : "无歌词"} · ${song.learned ? "已学会" : "未学会"}`;
+  els.librarySongInfo.textContent = `${audioStatusLabel(song)} · ${song.has_lyrics ? `${song.lyrics_type?.toUpperCase()} 歌词` : "无歌词"} · ${song.learned ? "已学会" : "未学会"}`;
   els.libraryLoadSong.disabled = false;
   els.libraryEditLyrics.disabled = false;
   els.libraryDeleteSong.disabled = false;
@@ -522,7 +532,7 @@ function renderSongSelect() {
   for (const song of songs) {
     const option = document.createElement("option");
     option.value = song.name;
-    const flags = [song.has_audio ? "音频" : null, song.has_lyrics ? song.lyrics_type?.toUpperCase() : null].filter(Boolean).join(" + ");
+    const flags = [audioPlayable(song) ? "音频" : song.has_audio ? "音频格式不支持" : null, song.has_lyrics ? song.lyrics_type?.toUpperCase() : null].filter(Boolean).join(" + ");
     option.textContent = `${song.name} (${flags || "空条目"})`;
     els.songSelect.append(option);
     els.librarySongSelect.append(option.cloneNode(true));
@@ -568,7 +578,7 @@ function renderLyrics() {
     node.dataset.endTime = String(state.lyrics[index + 1]?.time ?? 999999);
     node.innerHTML = lineText(line);
     node.addEventListener("click", () => {
-      if (!state.current?.has_audio) return;
+      if (!audioPlayable(state.current)) return;
       seekAudioTo(Number(line.time || 0), { play: true });
     });
     els.lyrics.append(node);
@@ -598,7 +608,7 @@ function seekAudioTo(time, { play = false } = {}) {
 }
 
 function syncAudioSource() {
-  if (!state.current?.has_audio) return;
+  if (!audioPlayable(state.current)) return;
   const key = Number(els.keySlider.value);
   const currentTime = els.audio.currentTime || 0;
   const wasPaused = els.audio.paused;
@@ -629,21 +639,23 @@ async function loadSong(name) {
   els.songPanel.hidden = false;
   els.settingsPanel.hidden = false;
   els.songTitle.textContent = `♫ ${song.name}`;
-  els.songAvailability.textContent = `${song.has_audio ? "有音频" : "仅歌词/无音频"} · ${song.has_lyrics ? `${song.lyrics_type?.toUpperCase()} 歌词` : "无歌词"}`;
+  const canPlay = audioPlayable(song);
+  const audioLabel = song.has_audio && !canPlay && song.audio_error ? `${audioStatusLabel(song)}：${song.audio_error}` : audioStatusLabel(song);
+  els.songAvailability.textContent = `${audioLabel} · ${song.has_lyrics ? `${song.lyrics_type?.toUpperCase()} 歌词` : "无歌词"}`;
   els.keySlider.value = String(song.saved_key || 0);
   els.keyOutput.value = String(song.saved_key || 0);
   els.rangeInput.value = song.range || "";
   els.learnedInput.checked = Boolean(song.learned);
-  els.keyField.hidden = !song.has_audio;
-  els.saveKey.disabled = !song.has_audio;
-  els.resetKey.disabled = !song.has_audio;
-  els.controls.hidden = !song.has_audio;
-  els.floatingControls.hidden = !song.has_audio;
+  els.keyField.hidden = !canPlay;
+  els.saveKey.disabled = !canPlay;
+  els.resetKey.disabled = !canPlay;
+  els.controls.hidden = !canPlay;
+  els.floatingControls.hidden = !canPlay;
   els.audio.pause();
   els.audio.removeAttribute("src");
   resetAB();
 
-  if (song.has_audio) syncAudioSource();
+  if (canPlay) syncAudioSource();
   renderLyrics();
   els.songSelect.value = song.name;
   els.librarySongSelect.value = song.name;
@@ -658,7 +670,7 @@ async function refreshSongsAfterLibraryMutation(affectedName = "") {
 }
 
 function highlightCurrentLyric() {
-  if (!state.current?.has_audio) return;
+  if (!audioPlayable(state.current)) return;
   const currentTime = els.audio.currentTime;
   if (state.ab.a != null && state.ab.b != null && state.ab.b > state.ab.a && currentTime >= state.ab.b) {
     els.audio.currentTime = state.ab.a;
@@ -1450,7 +1462,7 @@ els.audio.addEventListener("pause", () => {
   els.playButton.textContent = "▶";
 });
 els.playButton.addEventListener("click", () => {
-  if (!state.current?.has_audio) return;
+  if (!audioPlayable(state.current)) return;
   if (els.audio.paused) els.audio.play().catch(() => {});
   else els.audio.pause();
 });
@@ -1477,7 +1489,7 @@ els.sideNav.addEventListener("click", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if (["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) return;
-  if (event.code === "Space" && state.current?.has_audio && state.page !== "generator") {
+  if (event.code === "Space" && audioPlayable(state.current) && state.page !== "generator") {
     event.preventDefault();
     els.playButton.click();
   }

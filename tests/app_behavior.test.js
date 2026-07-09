@@ -65,7 +65,7 @@ test("library upload UI exposes statuses and manual audio target binding", () =>
   assert.match(appJs, /saveLyricsText/);
   assert.match(appJs, /lyricsUploadButton/);
   assert.match(appJs, /target_song/);
-  assert.match(appJs, /has_lyrics && !song\.has_audio/);
+  assert.match(appJs, /song\.has_lyrics && \(!song\.has_audio \|\| !audioPlayable\(song\)\)/);
   assert.match(appJs, /song\.has_audio && !song\.has_lyrics/);
 });
 
@@ -73,7 +73,8 @@ test("audio upload endpoint can attach one arbitrary-named file to a lyric-only 
   assert.match(webApp, /target_song = sanitize_filename\(request\.form\.get\("target_song", ""\)\.strip\(\)\)/);
   assert.match(webApp, /if target_song and len\(files\) != 1:/);
   assert.match(webApp, /if not song\["lyrics_path"\]:/);
-  assert.match(webApp, /if song\["audio_path"\]:/);
+  assert.match(webApp, /if song\["audio_path"\] and audio_compatibility\(song\["audio_path"\]\)\["playable"\]:/);
+  assert.match(webApp, /archive_song_file\(song\["audio_path"\]\)/);
   assert.match(webApp, /target = SONG_DIR \/ f"\{target_song\}\{suffix\}"/);
 });
 
@@ -259,6 +260,23 @@ test("lyrics and audio library mutations reload the affected song before playbac
   assert.match(appJs, /refreshSongsAfterLibraryMutation\(result\.song_name \|\| target_song \|\| song_name\)/);
   assert.match(appJs, /const previousCurrent = state\.current\?\.name \|\| ""/);
   assert.match(appJs, /refreshSongsAfterLibraryMutation\(detail\.song_name \|\| previousCurrent\)/);
+});
+
+test("web library distinguishes unsupported audio files from playable audio", () => {
+  assert.match(webApp, /import subprocess/);
+  assert.match(webApp, /def audio_compatibility\(audio_path\):/);
+  assert.match(webApp, /ffprobe/);
+  assert.match(webApp, /codec_name/);
+  assert.match(webApp, /av3a/);
+  assert.match(webApp, /"audio_playable": audio_status\["playable"\]/);
+  assert.match(webApp, /"audio_error": audio_status\["error"\]/);
+  assert.match(webApp, /return jsonify\(\{"error": audio_status\["error"\]\}\), 415/);
+  assert.match(webApp, /if song\["audio_path"\] and audio_compatibility\(song\["audio_path"\]\)\["playable"\]:/);
+  assert.match(webApp, /archive_song_file\(song\["audio_path"\]\)/);
+  assert.match(appJs, /function audioPlayable\(song\)/);
+  assert.match(appJs, /song\.has_lyrics && \(!song\.has_audio \|\| !audioPlayable\(song\)\)/);
+  assert.match(appJs, /音频格式不支持/);
+  assert.match(appJs, /if \(canPlay\) syncAudioSource\(\)/);
 });
 
 test("APK lyric search mirrors all web providers without the optional sync backend", () => {
