@@ -3,6 +3,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
 const androidMain = readFileSync("android/app/src/main/java/com/utapractice/app/MainActivity.java", "utf8");
+const androidBuildGradle = readFileSync("android/app/build.gradle", "utf8");
 const appJs = readFileSync("web_static/app.js", "utf8");
 const appCss = readFileSync("web_static/app.css", "utf8");
 const indexHtml = readFileSync("templates/index.html", "utf8");
@@ -293,6 +294,12 @@ test("APK sync refreshes stale unplayable local audio state from the server", ()
   assert.match(androidMain, /return jsonResponse\(415, errorJson\(detail\.optString\("audio_error"/);
   assert.match(androidMain, /summary\.put\("audio_playable", detail\.optBoolean\("audio_playable", true\)\)/);
   assert.match(androidMain, /summary\.put\("audio_size", detail\.optLong\("audio_size", 0\)\)/);
+});
+
+test("APK sync completion reloads the current song and exposes a bumped build", () => {
+  assert.match(appJs, /if \(detail\.channel === "sync" && detail\.status === "done"\) \{[\s\S]*refreshSongsAfterLibraryMutation\(state\.current\?\.name \|\| ""\)/);
+  assert.match(androidBuildGradle, /versionCode 2/);
+  assert.match(androidBuildGradle, /versionName "0\.1\.1"/);
 });
 
 test("APK lyric search mirrors all web providers without the optional sync backend", () => {

@@ -242,6 +242,7 @@ window.addEventListener("utapractice-android", async (event) => {
   }
   if (detail.channel === "sync" && detail.status === "done") {
     await loadSongs().catch(() => {});
+    await refreshSongsAfterLibraryMutation(state.current?.name || "").catch(() => {});
   }
   if (detail.channel === "sync" && ["done", "failed"].includes(detail.status)) {
     els.apkSyncAll.disabled = false;
