@@ -478,6 +478,13 @@ def audio_mime_type(audio_path):
     return explicit.get(audio_path.suffix.lower()) or mimetypes.guess_type(audio_path.name)[0] or "application/octet-stream"
 
 
+def audio_metadata(audio_path):
+    if not audio_path:
+        return {"audio_size": 0, "audio_mtime": 0, "audio_mime": ""}
+    stat = audio_path.stat()
+    return {"audio_size": stat.st_size, "audio_mtime": int(stat.st_mtime), "audio_mime": audio_mime_type(audio_path)}
+
+
 def fetch_json(url, headers=None, timeout=SEARCH_HTTP_TIMEOUT_SECONDS):
     request = Request(url, headers={"User-Agent": "Mozilla/5.0 utapractice", **(headers or {})})
     with urlopen(request, timeout=timeout) as response:
@@ -1643,12 +1650,16 @@ def api_songs():
         info = db.get(name, {})
         song = songs[name]
         audio_status = audio_compatibility(song["audio_path"]) if song["audio_path"] else {"playable": False, "error": ""}
+        audio_meta = audio_metadata(song["audio_path"])
         payload.append(
             {
                 "name": name,
                 "has_audio": song["audio_path"] is not None,
                 "audio_playable": audio_status["playable"],
                 "audio_error": audio_status["error"],
+                "audio_size": audio_meta["audio_size"],
+                "audio_mtime": audio_meta["audio_mtime"],
+                "audio_mime": audio_meta["audio_mime"],
                 "has_lyrics": song["lyrics_path"] is not None,
                 "lyrics_type": song["lyrics_path"].suffix.lower()[1:] if song["lyrics_path"] else None,
                 "learned": bool(info.get("learned", False)),
@@ -1668,12 +1679,16 @@ def api_song(name):
     db = load_db()
     info = db.setdefault(name, {})
     audio_status = audio_compatibility(song["audio_path"]) if song["audio_path"] else {"playable": False, "error": ""}
+    audio_meta = audio_metadata(song["audio_path"])
     return jsonify(
             {
                 "name": name,
                 "has_audio": song["audio_path"] is not None,
                 "audio_playable": audio_status["playable"],
                 "audio_error": audio_status["error"],
+                "audio_size": audio_meta["audio_size"],
+                "audio_mtime": audio_meta["audio_mtime"],
+                "audio_mime": audio_meta["audio_mime"],
                 "has_lyrics": song["lyrics_path"] is not None,
                 "lyrics_type": song["lyrics_path"].suffix.lower()[1:] if song["lyrics_path"] else None,
                 "lyrics": read_lyrics(song["lyrics_path"]),

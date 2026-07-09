@@ -186,6 +186,8 @@ public class MainActivity extends Activity {
         String audioPrefix = "/api/songs/";
         if (path != null && path.startsWith(audioPrefix) && path.endsWith("/audio")) {
             String name = Uri.decode(path.substring(audioPrefix.length(), path.length() - "/audio".length()));
+            WebResourceResponse unavailable = audioUnavailableResponse(name);
+            if (unavailable != null) return unavailable;
             File audio = audioFile(name);
             if (audio.exists()) return audioFileResponse(audioMimeFile(name), audio, request);
             return jsonResponse(404, "{\"error\":\"这首歌没有本地音频，请先导入或同步\"}");
@@ -241,6 +243,8 @@ public class MainActivity extends Activity {
             String audioPrefix = "/api/songs/";
             if (path != null && path.startsWith(audioPrefix) && path.endsWith("/audio")) {
                 String name = Uri.decode(path.substring(audioPrefix.length(), path.length() - "/audio".length()));
+                WebResourceResponse unavailable = audioUnavailableResponse(name);
+                if (unavailable != null) return unavailable;
                 File audio = audioFile(name);
                 if (audio.exists()) return audioFileResponse(audioMimeFile(name), audio, request);
                 return jsonResponse(404, "{\"error\":\"这首歌没有本地音频，请先导入或同步\"}");
@@ -294,6 +298,7 @@ public class MainActivity extends Activity {
                     writeFile(songsListFile(), listBytes);
                     JSONArray songs = new JSONArray(new String(listBytes, StandardCharsets.UTF_8));
                     int failed = 0;
+                    List<String> failedNames = new ArrayList<>();
                     for (int index = 0; index < songs.length(); index++) {
                         JSONObject summary = songs.optJSONObject(index);
                         if (summary == null) continue;
@@ -305,10 +310,14 @@ public class MainActivity extends Activity {
                             syncSong(baseUrl, name);
                         } catch (Exception error) {
                             failed += 1;
+                            failedNames.add(name + "：" + error.getMessage());
                         }
                     }
                     prefs.edit().putString(KEY_LAST_SYNC, String.valueOf(System.currentTimeMillis())).apply();
-                    emit("sync", "done", 100, failed == 0 ? "同步完成；刷新歌库后可离线使用" : "同步完成，失败 " + failed + " 首；其余可离线使用");
+                    String message = failed == 0
+                        ? "同步完成；刷新歌库后可离线使用"
+                        : "同步完成，失败 " + failed + " 首：" + joinFirst(failedNames, 3);
+                    emit("sync", "done", 100, message);
                 } catch (Exception error) {
                     emit("sync", "failed", 0, "同步失败：" + error.getMessage());
                 }
@@ -1242,8 +1251,13 @@ public class MainActivity extends Activity {
             writeStream(audioFile(songName), input);
         }
         String mime = getContentResolver().getType(uri);
-        writeText(audioMimeSidecar(songName), mime == null || mime.trim().isEmpty() ? "audio/mpeg" : mime);
+        String audioMime = normalizeAudioMime(mime, "");
+        writeText(audioMimeSidecar(songName), audioMime);
         detail.put("has_audio", true);
+        detail.put("audio_playable", true);
+        detail.put("audio_error", "");
+        detail.put("audio_size", audioFile(songName).length());
+        detail.put("audio_mime", audioMime);
         upsertLocalSong(detail);
     }
 
@@ -1542,6 +1556,8 @@ public class MainActivity extends Activity {
         if (!detail.has("range")) detail.put("range", "");
         if (!detail.has("saved_key")) detail.put("saved_key", 0);
         detail.put("has_audio", detail.optBoolean("has_audio", false) || audioFile(name).exists());
+        if (detail.optBoolean("has_audio", false) && !detail.has("audio_playable")) detail.put("audio_playable", true);
+        if (!detail.has("audio_error")) detail.put("audio_error", "");
         detail.put("has_lyrics", detail.optBoolean("has_lyrics", false) || detail.optJSONArray("lyrics") != null && detail.optJSONArray("lyrics").length() > 0);
         if (!detail.optBoolean("has_lyrics", false)) detail.put("lyrics_type", JSONObject.NULL);
         return detail;
@@ -1552,6 +1568,8 @@ public class MainActivity extends Activity {
         if (name.isEmpty()) throw new IOException("Song name is required");
         detail.put("name", name);
         detail.put("has_audio", detail.optBoolean("has_audio", false) || audioFile(name).exists());
+        if (detail.optBoolean("has_audio", false) && !detail.has("audio_playable")) detail.put("audio_playable", true);
+        if (!detail.has("audio_error")) detail.put("audio_error", "");
         if (!detail.has("lyrics")) detail.put("lyrics", new JSONArray());
         JSONArray lyrics = detail.optJSONArray("lyrics");
         detail.put("has_lyrics", detail.optBoolean("has_lyrics", false) || lyrics != null && lyrics.length() > 0);
@@ -1580,6 +1598,10 @@ public class MainActivity extends Activity {
         JSONObject summary = new JSONObject();
         summary.put("name", detail.optString("name", ""));
         summary.put("has_audio", detail.optBoolean("has_audio", false));
+        summary.put("audio_playable", detail.optBoolean("audio_playable", true));
+        summary.put("audio_error", detail.optString("audio_error", ""));
+        summary.put("audio_size", detail.optLong("audio_size", 0));
+        summary.put("audio_mime", detail.optString("audio_mime", ""));
         summary.put("has_lyrics", detail.optBoolean("has_lyrics", false));
         summary.put("lyrics_type", detail.optBoolean("has_lyrics", false) ? detail.optString("lyrics_type", "json") : JSONObject.NULL);
         summary.put("learned", detail.optBoolean("learned", false));
@@ -1791,17 +1813,63 @@ public class MainActivity extends Activity {
         if (file.exists() && !file.delete()) throw new IOException("删除本地文件失败：" + file.getName());
     }
 
+    private String joinFirst(List<String> values, int limit) {
+        StringBuilder builder = new StringBuilder();
+        int count = Math.min(values.size(), limit);
+        for (int index = 0; index < count; index++) {
+            if (builder.length() > 0) builder.append("；");
+            builder.append(values.get(index));
+        }
+        if (values.size() > limit) builder.append("；另有 ").append(values.size() - limit).append(" 首");
+        return builder.toString();
+    }
+
+    private String normalizeAudioMime(String contentType, String fallback) {
+        String mime = contentType == null ? "" : contentType.split(";", 2)[0].trim().toLowerCase();
+        if (mime.isEmpty() || "application/octet-stream".equals(mime)) {
+            mime = fallback == null ? "" : fallback.split(";", 2)[0].trim().toLowerCase();
+        }
+        if (mime.isEmpty() || "application/octet-stream".equals(mime)) return "audio/mpeg";
+        return mime;
+    }
+
+    private void markLocalAudioPlayable(JSONObject song, HttpResult audio) throws Exception {
+        String mime = normalizeAudioMime(audio.contentType, song.optString("audio_mime", ""));
+        song.put("has_audio", true);
+        song.put("audio_playable", true);
+        song.put("audio_error", "");
+        song.put("audio_size", audio.bytes.length);
+        song.put("audio_mime", mime);
+    }
+
+    private WebResourceResponse audioUnavailableResponse(String name) {
+        JSONObject detail = readJsonObject(songJsonFile(name));
+        if (detail.optBoolean("audio_playable", true)) return null;
+        return jsonResponse(415, errorJson(detail.optString("audio_error", "音频格式不支持")).toString());
+    }
+
     private void syncSong(String baseUrl, String name) throws Exception {
         String encodedName = URLEncoder.encode(name, "UTF-8").replace("+", "%20");
         byte[] songBytes = httpGetBytes(baseUrl + "/api/songs/" + encodedName);
-        writeFile(songJsonFile(name), songBytes);
-
         JSONObject song = new JSONObject(new String(songBytes, StandardCharsets.UTF_8));
-        if (!song.optBoolean("has_audio", false)) return;
+        if (!song.optBoolean("has_audio", false)) {
+            deleteIfExists(audioFile(name));
+            deleteIfExists(audioMimeSidecar(name));
+            upsertLocalSong(song);
+            return;
+        }
+        if (!song.optBoolean("audio_playable", true)) {
+            deleteIfExists(audioFile(name));
+            deleteIfExists(audioMimeSidecar(name));
+            upsertLocalSong(song);
+            return;
+        }
         int key = song.optInt("saved_key", 0);
         HttpResult audio = httpGet(baseUrl + "/api/songs/" + encodedName + "/audio?key=" + key);
         writeFile(audioFile(name), audio.bytes);
-        writeText(audioMimeSidecar(name), audio.contentType == null ? "audio/mpeg" : audio.contentType);
+        markLocalAudioPlayable(song, audio);
+        writeText(audioMimeSidecar(name), song.optString("audio_mime", "audio/mpeg"));
+        upsertLocalSong(song);
     }
 
     private void emit(String channel, String status, int progress, String message) {

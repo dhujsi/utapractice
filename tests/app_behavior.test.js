@@ -281,6 +281,20 @@ test("web library distinguishes unsupported audio files from playable audio", ()
   assert.match(appJs, /if \(canPlay\) syncAudioSource\(\)/);
 });
 
+test("APK sync refreshes stale unplayable local audio state from the server", () => {
+  assert.match(webApp, /"audio_size": stat\.st_size/);
+  assert.match(webApp, /"audio_mime": audio_mime_type\(audio_path\)/);
+  assert.match(androidMain, /private void markLocalAudioPlayable\(JSONObject song, HttpResult audio\)/);
+  assert.match(androidMain, /song\.put\("audio_playable", true\)/);
+  assert.match(androidMain, /song\.put\("audio_error", ""\)/);
+  assert.match(androidMain, /song\.put\("audio_size", audio\.bytes\.length\)/);
+  assert.match(androidMain, /upsertLocalSong\(song\)/);
+  assert.match(androidMain, /audioUnavailableResponse\(name\)/);
+  assert.match(androidMain, /return jsonResponse\(415, errorJson\(detail\.optString\("audio_error"/);
+  assert.match(androidMain, /summary\.put\("audio_playable", detail\.optBoolean\("audio_playable", true\)\)/);
+  assert.match(androidMain, /summary\.put\("audio_size", detail\.optLong\("audio_size", 0\)\)/);
+});
+
 test("APK lyric search mirrors all web providers without the optional sync backend", () => {
   assert.match(androidMain, /SEARCH_TIMEOUT_MS = 6000/);
   assert.match(androidMain, /SEARCH_AGGREGATE_TIMEOUT_MS = 7000/);
