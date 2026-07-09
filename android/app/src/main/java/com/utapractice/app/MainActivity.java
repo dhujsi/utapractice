@@ -85,7 +85,7 @@ public class MainActivity extends Activity {
         settings.setDatabaseEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setAllowFileAccess(false);
-        settings.setAllowContentAccess(false);
+        settings.setAllowContentAccess(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
 
         webView.addJavascriptInterface(new AndroidBridge(), "UtaPracticeAndroid");
@@ -285,6 +285,17 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void setServerUrl(String value) {
             prefs.edit().putString(KEY_SERVER_URL, cleanUrl(value)).apply();
+        }
+
+        @JavascriptInterface
+        public String audioUrl(String songName, String keyText) {
+            try {
+                String name = cleanSongName(songName);
+                if (name.isEmpty() || !audioFile(name).exists()) return "";
+                return LocalAudioProvider.audioUri(MainActivity.this, name).toString();
+            } catch (Exception error) {
+                return "";
+            }
         }
 
         @JavascriptInterface

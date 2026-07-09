@@ -1,8 +1,11 @@
-const { readFileSync } = require("node:fs");
+const { existsSync, readFileSync } = require("node:fs");
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
 const androidMain = readFileSync("android/app/src/main/java/com/utapractice/app/MainActivity.java", "utf8");
+const androidManifest = readFileSync("android/app/src/main/AndroidManifest.xml", "utf8");
+const androidLocalAudioProviderPath = "android/app/src/main/java/com/utapractice/app/LocalAudioProvider.java";
+const androidLocalAudioProvider = existsSync(androidLocalAudioProviderPath) ? readFileSync(androidLocalAudioProviderPath, "utf8") : "";
 const androidBuildGradle = readFileSync("android/app/build.gradle", "utf8");
 const appJs = readFileSync("web_static/app.js", "utf8");
 const appCss = readFileSync("web_static/app.css", "utf8");
@@ -17,6 +20,22 @@ test("APK local audio responses implement HTTP Range semantics", () => {
   assert.match(androidMain, /"Content-Range"/);
   assert.match(androidMain, /"Content-Length"/);
   assert.match(androidMain, /new BoundedInputStream\(/);
+});
+
+test("APK audio playback uses a seekable content provider instead of WebView intercepted media", () => {
+  assert.match(androidManifest, /android:name="\.LocalAudioProvider"/);
+  assert.match(androidManifest, /android:authorities="com\.utapractice\.app\.audio"/);
+  assert.match(androidManifest, /android:exported="false"/);
+  assert.match(androidMain, /settings\.setAllowContentAccess\(true\)/);
+  assert.match(androidMain, /public String audioUrl\(String songName, String keyText\)/);
+  assert.match(androidMain, /LocalAudioProvider\.audioUri\(MainActivity\.this, name\)\.toString\(\)/);
+  assert.match(androidLocalAudioProvider, /extends ContentProvider/);
+  assert.match(androidLocalAudioProvider, /ParcelFileDescriptor\.open\(audio, ParcelFileDescriptor\.MODE_READ_ONLY\)/);
+  assert.match(androidLocalAudioProvider, /getType\(Uri uri\)/);
+  assert.match(androidLocalAudioProvider, /audioMimeFile\(safeName\)/);
+  assert.match(appJs, /function audioSourceUrl\(song, key\)/);
+  assert.match(appJs, /window\.UtaPracticeAndroid\.audioUrl\(song\.name, String\(key\)\)/);
+  assert.match(appJs, /els\.audio\.src = audioSourceUrl\(state\.current, key\);/);
 });
 
 test("lyric click seeks after audio metadata is ready", () => {
@@ -321,8 +340,8 @@ test("APK sync completion reloads the current song and exposes a bumped build", 
   assert.match(appJs, /if \(detail\.channel === "sync" && detail\.status === "done"\) \{[\s\S]*refreshSongsAfterLibraryMutation\(state\.current\?\.name \|\| ""\)/);
   assert.match(androidMain, /"同步完成，歌库已刷新，可离线使用"/);
   assert.doesNotMatch(androidMain, /刷新歌库后可离线使用/);
-  assert.match(androidBuildGradle, /versionCode 3/);
-  assert.match(androidBuildGradle, /versionName "0\.1\.2"/);
+  assert.match(androidBuildGradle, /versionCode 4/);
+  assert.match(androidBuildGradle, /versionName "0\.1\.3"/);
 });
 
 test("APK lyric search mirrors all web providers without the optional sync backend", () => {

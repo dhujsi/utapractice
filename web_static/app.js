@@ -448,6 +448,18 @@ function playCurrentAudio() {
   els.audio.play().catch(reportAudioPlaybackError);
 }
 
+function audioSourceUrl(song, key) {
+  if (hasAndroidBridge() && typeof window.UtaPracticeAndroid.audioUrl === "function") {
+    try {
+      const androidUrl = window.UtaPracticeAndroid.audioUrl(song.name, String(key));
+      if (androidUrl) return androidUrl;
+    } catch {
+      return `/api/songs/${encodeURIComponent(song.name)}/audio?key=${key}`;
+    }
+  }
+  return `/api/songs/${encodeURIComponent(song.name)}/audio?key=${key}`;
+}
+
 function renderAudioTargetOptions() {
   if (!els.audioTargetSongSelect) return;
   const previous = els.audioTargetSongSelect.value;
@@ -669,7 +681,7 @@ function syncAudioSource({ preserveTime = true } = {}) {
     },
     { once: true },
   );
-  els.audio.src = `/api/songs/${encodeURIComponent(state.current.name)}/audio?key=${key}`;
+  els.audio.src = audioSourceUrl(state.current, key);
   els.audio.load();
 }
 
