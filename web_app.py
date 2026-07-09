@@ -468,6 +468,16 @@ def audio_compatibility(audio_path):
     return {"playable": False, "error": f"音频格式不支持：{codec_label}，请替换音频"}
 
 
+def audio_mime_type(audio_path):
+    explicit = {
+        ".m4a": "audio/mp4",
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".flac": "audio/flac",
+    }
+    return explicit.get(audio_path.suffix.lower()) or mimetypes.guess_type(audio_path.name)[0] or "application/octet-stream"
+
+
 def fetch_json(url, headers=None, timeout=SEARCH_HTTP_TIMEOUT_SECONDS):
     request = Request(url, headers={"User-Agent": "Mozilla/5.0 utapractice", **(headers or {})})
     with urlopen(request, timeout=timeout) as response:
@@ -1688,7 +1698,7 @@ def api_audio(name):
 
     key_shift = int(request.args.get("key", 0))
     audio_path = song["audio_path"] if key_shift == 0 else shifted_audio_path(song["audio_path"], key_shift)
-    mime_type = mimetypes.guess_type(audio_path.name)[0] or "application/octet-stream"
+    mime_type = audio_mime_type(audio_path)
     return send_file(audio_path, mimetype=mime_type, conditional=True)
 
 

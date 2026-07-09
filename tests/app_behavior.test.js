@@ -265,9 +265,11 @@ test("lyrics and audio library mutations reload the affected song before playbac
 test("web library distinguishes unsupported audio files from playable audio", () => {
   assert.match(webApp, /import subprocess/);
   assert.match(webApp, /def audio_compatibility\(audio_path\):/);
+  assert.match(webApp, /def audio_mime_type\(audio_path\):/);
   assert.match(webApp, /ffprobe/);
   assert.match(webApp, /codec_name/);
   assert.match(webApp, /av3a/);
+  assert.match(webApp, /"\.m4a": "audio\/mp4"/);
   assert.match(webApp, /"audio_playable": audio_status\["playable"\]/);
   assert.match(webApp, /"audio_error": audio_status\["error"\]/);
   assert.match(webApp, /return jsonify\(\{"error": audio_status\["error"\]\}\), 415/);
