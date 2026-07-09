@@ -116,6 +116,7 @@ const els = {
 };
 
 let jobPollTimer = null;
+let audioSourceToken = 0;
 const EDGE_SWIPE_WIDTH = 36;
 const SIDEBAR_SWIPE_DISTANCE = 48;
 const SIDEBAR_SWIPE_RATIO = 1.2;
@@ -417,6 +418,36 @@ function audioStatusLabel(song) {
   return "无音频";
 }
 
+function songAvailabilityText(song) {
+  const audioLabel = song?.has_audio && !audioPlayable(song) && song.audio_error ? `${audioStatusLabel(song)}：${song.audio_error}` : audioStatusLabel(song);
+  return `${audioLabel} · ${song?.has_lyrics ? `${song.lyrics_type?.toUpperCase()} 歌词` : "无歌词"}`;
+}
+
+function audioErrorMessage(error) {
+  const mediaError = els.audio.error;
+  if (error?.message) return error.message;
+  if (!mediaError) return "音频无法播放";
+  const labels = {
+    1: "加载已中断",
+    2: "网络或本地缓存读取失败",
+    3: "音频解码失败",
+    4: "格式不支持或文件不可用",
+  };
+  return labels[mediaError.code] || "音频无法播放";
+}
+
+function reportAudioPlaybackError(error) {
+  if (!audioPlayable(state.current)) return;
+  const message = audioErrorMessage(error);
+  els.songAvailability.textContent = `${songAvailabilityText(state.current)} · 播放失败：${message}`;
+  showToast(`播放失败：${message}`);
+}
+
+function playCurrentAudio() {
+  if (!audioPlayable(state.current)) return;
+  els.audio.play().catch(reportAudioPlaybackError);
+}
+
 function renderAudioTargetOptions() {
   if (!els.audioTargetSongSelect) return;
   const previous = els.audioTargetSongSelect.value;
@@ -588,10 +619,12 @@ function renderLyrics() {
 
 function seekAudioTo(time, { play = false } = {}) {
   const target = Math.max(0, Number(time) || 0);
+  const token = audioSourceToken;
   const applySeek = () => {
+    if (token !== audioSourceToken) return;
     const duration = Number(els.audio.duration);
     els.audio.currentTime = Number.isFinite(duration) && duration > 0 ? Math.min(target, duration) : target;
-    if (play) els.audio.play().catch(() => {});
+    if (play) playCurrentAudio();
   };
 
   if (els.audio.readyState >= 1) {
@@ -608,21 +641,36 @@ function seekAudioTo(time, { play = false } = {}) {
   els.audio.addEventListener("canplay", onReady, { once: true });
 }
 
-function syncAudioSource() {
+function resetAudioElement() {
+  audioSourceToken += 1;
+  els.audio.pause();
+  els.audio.removeAttribute("src");
+  els.audio.load();
+  try {
+    els.audio.currentTime = 0;
+  } catch {
+    // Some WebView builds reject currentTime changes while no media is attached.
+  }
+}
+
+function syncAudioSource({ preserveTime = true } = {}) {
   if (!audioPlayable(state.current)) return;
   const key = Number(els.keySlider.value);
-  const currentTime = els.audio.currentTime || 0;
+  const currentTime = preserveTime ? els.audio.currentTime || 0 : 0;
   const wasPaused = els.audio.paused;
+  const token = ++audioSourceToken;
   els.keyOutput.value = String(key);
-  els.audio.src = `/api/songs/${encodeURIComponent(state.current.name)}/audio?key=${key}`;
   els.audio.addEventListener(
     "loadedmetadata",
     () => {
+      if (token !== audioSourceToken) return;
       if (currentTime > 0 && currentTime < els.audio.duration) els.audio.currentTime = currentTime;
-      if (!wasPaused) els.audio.play().catch(() => {});
+      if (!wasPaused) playCurrentAudio();
     },
     { once: true },
   );
+  els.audio.src = `/api/songs/${encodeURIComponent(state.current.name)}/audio?key=${key}`;
+  els.audio.load();
 }
 
 async function loadSongs() {
@@ -641,8 +689,7 @@ async function loadSong(name) {
   els.settingsPanel.hidden = false;
   els.songTitle.textContent = `♫ ${song.name}`;
   const canPlay = audioPlayable(song);
-  const audioLabel = song.has_audio && !canPlay && song.audio_error ? `${audioStatusLabel(song)}：${song.audio_error}` : audioStatusLabel(song);
-  els.songAvailability.textContent = `${audioLabel} · ${song.has_lyrics ? `${song.lyrics_type?.toUpperCase()} 歌词` : "无歌词"}`;
+  els.songAvailability.textContent = songAvailabilityText(song);
   els.keySlider.value = String(song.saved_key || 0);
   els.keyOutput.value = String(song.saved_key || 0);
   els.rangeInput.value = song.range || "";
@@ -652,11 +699,10 @@ async function loadSong(name) {
   els.resetKey.disabled = !canPlay;
   els.controls.hidden = !canPlay;
   els.floatingControls.hidden = !canPlay;
-  els.audio.pause();
-  els.audio.removeAttribute("src");
+  resetAudioElement();
   resetAB();
 
-  if (canPlay) syncAudioSource();
+  if (canPlay) syncAudioSource({ preserveTime: false });
   renderLyrics();
   els.songSelect.value = song.name;
   els.librarySongSelect.value = song.name;
@@ -675,7 +721,7 @@ function highlightCurrentLyric() {
   const currentTime = els.audio.currentTime;
   if (state.ab.a != null && state.ab.b != null && state.ab.b > state.ab.a && currentTime >= state.ab.b) {
     els.audio.currentTime = state.ab.a;
-    els.audio.play().catch(() => {});
+    playCurrentAudio();
     return;
   }
   const lines = els.lyrics.querySelectorAll(".lyric-line");
@@ -1462,9 +1508,10 @@ els.audio.addEventListener("play", () => {
 els.audio.addEventListener("pause", () => {
   els.playButton.textContent = "▶";
 });
+els.audio.addEventListener("error", () => reportAudioPlaybackError());
 els.playButton.addEventListener("click", () => {
   if (!audioPlayable(state.current)) return;
-  if (els.audio.paused) els.audio.play().catch(() => {});
+  if (els.audio.paused) playCurrentAudio();
   else els.audio.pause();
 });
 els.speedButton.addEventListener("click", () => {

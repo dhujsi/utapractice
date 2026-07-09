@@ -27,6 +27,27 @@ test("lyric click seeks after audio metadata is ready", () => {
   assert.doesNotMatch(appJs, /els\.audio\.currentTime = Number\(line\.time \|\| 0\);\n\s*els\.audio\.play/);
 });
 
+test("loading a new song resets player position and cancels stale audio callbacks", () => {
+  const seekFunction = appJs.match(/function seekAudioTo\(time, \{ play = false \} = \{\}\) \{[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(appJs, /let audioSourceToken = 0;/);
+  assert.match(appJs, /function resetAudioElement\(\) \{[\s\S]*audioSourceToken \+= 1;[\s\S]*els\.audio\.pause\(\);[\s\S]*els\.audio\.removeAttribute\("src"\);[\s\S]*els\.audio\.load\(\);/);
+  assert.match(seekFunction, /const token = audioSourceToken;/);
+  assert.match(seekFunction, /if \(token !== audioSourceToken\) return;/);
+  assert.match(appJs, /function syncAudioSource\(\{ preserveTime = true \} = \{\}\) \{/);
+  assert.match(appJs, /const currentTime = preserveTime \? els\.audio\.currentTime \|\| 0 : 0;/);
+  assert.match(appJs, /const token = \+\+audioSourceToken;/);
+  assert.match(appJs, /if \(token !== audioSourceToken\) return;/);
+  assert.match(appJs, /resetAudioElement\(\);\n\s*resetAB\(\);\n\s*if \(canPlay\) syncAudioSource\(\{ preserveTime: false \}\);/);
+});
+
+test("player reports media playback failures instead of silently swallowing them", () => {
+  assert.match(appJs, /function reportAudioPlaybackError\(error\)/);
+  assert.match(appJs, /function playCurrentAudio\(\)/);
+  assert.match(appJs, /els\.audio\.play\(\)\.catch\(reportAudioPlaybackError\)/);
+  assert.match(appJs, /els\.audio\.addEventListener\("error", \(\) => reportAudioPlaybackError\(\)\)/);
+  assert.match(appJs, /if \(els\.audio\.paused\) playCurrentAudio\(\);/);
+});
+
 test("mobile sidebar swipe is implemented in the shared web UI", () => {
   assert.match(appJs, /document\.addEventListener\("touchstart", onSidebarSwipeStart/);
   assert.match(appJs, /document\.addEventListener\("touchmove", onSidebarSwipeMove/);
@@ -279,7 +300,7 @@ test("web library distinguishes unsupported audio files from playable audio", ()
   assert.match(appJs, /function audioPlayable\(song\)/);
   assert.match(appJs, /song\.has_lyrics && \(!song\.has_audio \|\| !audioPlayable\(song\)\)/);
   assert.match(appJs, /音频格式不支持/);
-  assert.match(appJs, /if \(canPlay\) syncAudioSource\(\)/);
+  assert.match(appJs, /if \(canPlay\) syncAudioSource\(\{ preserveTime: false \}\)/);
 });
 
 test("APK sync refreshes stale unplayable local audio state from the server", () => {
@@ -300,8 +321,8 @@ test("APK sync completion reloads the current song and exposes a bumped build", 
   assert.match(appJs, /if \(detail\.channel === "sync" && detail\.status === "done"\) \{[\s\S]*refreshSongsAfterLibraryMutation\(state\.current\?\.name \|\| ""\)/);
   assert.match(androidMain, /"同步完成，歌库已刷新，可离线使用"/);
   assert.doesNotMatch(androidMain, /刷新歌库后可离线使用/);
-  assert.match(androidBuildGradle, /versionCode 2/);
-  assert.match(androidBuildGradle, /versionName "0\.1\.1"/);
+  assert.match(androidBuildGradle, /versionCode 3/);
+  assert.match(androidBuildGradle, /versionName "0\.1\.2"/);
 });
 
 test("APK lyric search mirrors all web providers without the optional sync backend", () => {
