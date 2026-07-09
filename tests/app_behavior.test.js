@@ -298,6 +298,8 @@ test("APK sync refreshes stale unplayable local audio state from the server", ()
 
 test("APK sync completion reloads the current song and exposes a bumped build", () => {
   assert.match(appJs, /if \(detail\.channel === "sync" && detail\.status === "done"\) \{[\s\S]*refreshSongsAfterLibraryMutation\(state\.current\?\.name \|\| ""\)/);
+  assert.match(androidMain, /"同步完成，歌库已刷新，可离线使用"/);
+  assert.doesNotMatch(androidMain, /刷新歌库后可离线使用/);
   assert.match(androidBuildGradle, /versionCode 2/);
   assert.match(androidBuildGradle, /versionName "0\.1\.1"/);
 });

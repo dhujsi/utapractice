@@ -315,7 +315,7 @@ public class MainActivity extends Activity {
                     }
                     prefs.edit().putString(KEY_LAST_SYNC, String.valueOf(System.currentTimeMillis())).apply();
                     String message = failed == 0
-                        ? "同步完成；刷新歌库后可离线使用"
+                        ? "同步完成，歌库已刷新，可离线使用"
                         : "同步完成，失败 " + failed + " 首：" + joinFirst(failedNames, 3);
                     emit("sync", "done", 100, message);
                 } catch (Exception error) {
