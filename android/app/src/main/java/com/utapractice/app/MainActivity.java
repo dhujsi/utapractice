@@ -26,6 +26,7 @@ import android.webkit.WebViewClient;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -33,9 +34,14 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.URL;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -66,6 +72,7 @@ public class MainActivity extends Activity {
 
     private WebView webView;
     private SharedPreferences prefs;
+    private LocalAudioHttpServer localAudioServer;
     private String pendingImportSongName = "";
     private String pendingImportKind = "";
 
@@ -85,13 +92,20 @@ public class MainActivity extends Activity {
         settings.setDatabaseEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setAllowFileAccess(false);
-        settings.setAllowContentAccess(true);
+        settings.setAllowContentAccess(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
 
         webView.addJavascriptInterface(new AndroidBridge(), "UtaPracticeAndroid");
         webView.setWebChromeClient(new WebChromeClient());
         webView.setWebViewClient(new AppWebViewClient());
+        startLocalAudioServer();
         webView.loadUrl(APP_ORIGIN + "/");
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (localAudioServer != null) localAudioServer.shutdown();
+        super.onDestroy();
     }
 
     private void configureSystemBars() {
@@ -292,7 +306,7 @@ public class MainActivity extends Activity {
             try {
                 String name = cleanSongName(songName);
                 if (name.isEmpty() || !audioFile(name).exists()) return "";
-                return LocalAudioProvider.audioUri(MainActivity.this, name).toString();
+                return localAudioUrl(name);
             } catch (Exception error) {
                 return "";
             }
@@ -344,6 +358,23 @@ public class MainActivity extends Activity {
         public void chooseLyricsForSong(String songName) {
             openImportPicker("lyrics", cleanSongName(songName), REQUEST_IMPORT_LYRICS, "*/*");
         }
+    }
+
+    private void startLocalAudioServer() {
+        try {
+            localAudioServer = new LocalAudioHttpServer();
+            localAudioServer.start();
+        } catch (IOException ignored) {
+            localAudioServer = null;
+        }
+    }
+
+    private String localAudioUrl(String name) throws IOException {
+        if (localAudioServer == null) return "";
+        File audio = audioFile(name);
+        if (!audio.exists() || audio.length() <= 0) return "";
+        String encodedName = URLEncoder.encode(name, "UTF-8").replace("+", "%20");
+        return "http://127.0.0.1:" + localAudioServer.port() + "/audio/" + encodedName + "?v=" + audio.lastModified() + "&size=" + audio.length();
     }
 
     private JSONObject handleLocalPost(String method, String rawPath, String body) throws Exception {
@@ -2218,6 +2249,154 @@ public class MainActivity extends Activity {
             return;
         }
         super.onBackPressed();
+    }
+
+    private class LocalAudioHttpServer extends Thread {
+        private final ServerSocket serverSocket;
+        private volatile boolean running = true;
+
+        LocalAudioHttpServer() throws IOException {
+            serverSocket = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
+            setName("utapractice-local-audio");
+            setDaemon(true);
+        }
+
+        int port() {
+            return serverSocket.getLocalPort();
+        }
+
+        void shutdown() {
+            running = false;
+            try {
+                serverSocket.close();
+            } catch (IOException ignored) {
+            }
+        }
+
+        @Override
+        public void run() {
+            while (running) {
+                try {
+                    Socket socket = serverSocket.accept();
+                    Thread worker = new Thread(() -> handle(socket), "utapractice-local-audio-client");
+                    worker.setDaemon(true);
+                    worker.start();
+                } catch (IOException error) {
+                    if (running) running = false;
+                }
+            }
+        }
+
+        private void handle(Socket socket) {
+            try (Socket client = socket) {
+                client.setSoTimeout(10000);
+                BufferedReader reader = new BufferedReader(new InputStreamReader(client.getInputStream(), StandardCharsets.US_ASCII));
+                String requestLine = reader.readLine();
+                if (requestLine == null || requestLine.trim().isEmpty()) return;
+
+                String[] parts = requestLine.split(" ");
+                if (parts.length < 2) {
+                    sendError(client.getOutputStream(), 400, "Bad Request");
+                    return;
+                }
+
+                String method = parts[0].trim().toUpperCase();
+                String target = parts[1].trim();
+                Map<String, String> headers = readHttpHeaders(reader);
+                if (!"GET".equals(method) && !"HEAD".equals(method)) {
+                    sendError(client.getOutputStream(), 405, "Method Not Allowed");
+                    return;
+                }
+
+                int queryIndex = target.indexOf('?');
+                String path = queryIndex >= 0 ? target.substring(0, queryIndex) : target;
+                String prefix = "/audio/";
+                if (!path.startsWith(prefix)) {
+                    sendError(client.getOutputStream(), 404, "Not Found");
+                    return;
+                }
+
+                String name = URLDecoder.decode(path.substring(prefix.length()), "UTF-8");
+                sendAudio(client.getOutputStream(), name, "HEAD".equals(method), headers.get("range"));
+            } catch (IOException ignored) {
+            }
+        }
+
+        private Map<String, String> readHttpHeaders(BufferedReader reader) throws IOException {
+            Map<String, String> headers = new LinkedHashMap<>();
+            String line;
+            while ((line = reader.readLine()) != null && !line.isEmpty()) {
+                int colon = line.indexOf(':');
+                if (colon <= 0) continue;
+                headers.put(line.substring(0, colon).trim().toLowerCase(), line.substring(colon + 1).trim());
+            }
+            return headers;
+        }
+
+        private void sendAudio(OutputStream output, String name, boolean headOnly, String rangeHeader) throws IOException {
+            File audio = audioFile(name);
+            if (!audio.exists() || audio.length() <= 0) {
+                sendError(output, 404, "Not Found");
+                return;
+            }
+
+            String mimeType = audioMimeFile(name);
+            long fileLength = audio.length();
+            if (rangeHeader == null || rangeHeader.trim().isEmpty()) {
+                Map<String, String> headers = audioHeaders(mimeType, fileLength);
+                writeHttpHeaders(output, 200, "OK", headers);
+                if (!headOnly) {
+                    try (InputStream input = new FileInputStream(audio)) {
+                        copy(input, output);
+                    }
+                }
+                return;
+            }
+
+            RangeSpec range = parseRangeHeader(rangeHeader, fileLength);
+            if (range == null) {
+                Map<String, String> headers = audioHeaders(mimeType, 0);
+                headers.put("Content-Range", "bytes */" + fileLength);
+                writeHttpHeaders(output, 416, "Range Not Satisfiable", headers);
+                return;
+            }
+
+            Map<String, String> headers = audioHeaders(mimeType, range.length());
+            headers.put("Content-Range", "bytes " + range.start + "-" + range.end + "/" + fileLength);
+            writeHttpHeaders(output, 206, "Partial Content", headers);
+            if (!headOnly) {
+                try (InputStream input = new BoundedInputStream(openFileAt(audio, range.start), range.length())) {
+                    copy(input, output);
+                }
+            }
+        }
+
+        private void sendError(OutputStream output, int status, String reason) throws IOException {
+            byte[] body = reason.getBytes(StandardCharsets.UTF_8);
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("Content-Type", "text/plain; charset=utf-8");
+            headers.put("Content-Length", String.valueOf(body.length));
+            writeHttpHeaders(output, status, reason, headers);
+            output.write(body);
+        }
+
+        private void writeHttpHeaders(OutputStream output, int status, String reason, Map<String, String> headers) throws IOException {
+            StringBuilder builder = new StringBuilder();
+            builder.append("HTTP/1.1 ").append(status).append(' ').append(reason).append("\r\n");
+            headers.put("Connection", "close");
+            headers.put("Cache-Control", "no-cache");
+            for (Map.Entry<String, String> entry : headers.entrySet()) {
+                builder.append(entry.getKey()).append(": ").append(entry.getValue()).append("\r\n");
+            }
+            builder.append("\r\n");
+            output.write(builder.toString().getBytes(StandardCharsets.ISO_8859_1));
+        }
+
+        private void copy(InputStream input, OutputStream output) throws IOException {
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+        }
     }
 
     private static class HttpResult {

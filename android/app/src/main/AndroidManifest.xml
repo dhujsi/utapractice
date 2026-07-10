@@ -9,11 +9,6 @@
         android:supportsRtl="true"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">
-        <provider
-            android:name=".LocalAudioProvider"
-            android:authorities="com.utapractice.app.audio"
-            android:exported="false" />
-
         <activity
             android:name=".MainActivity"
             android:configChanges="keyboardHidden|orientation|screenSize"

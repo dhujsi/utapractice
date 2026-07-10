@@ -367,7 +367,13 @@ function setABPoint(point) {
 }
 
 function cycleMobileAB() {
-  if (state.ab.a == null || (state.ab.a != null && state.ab.b != null)) {
+  if (state.ab.a != null && state.ab.b != null) {
+    resetAB();
+    showToast("A-B 已取消");
+    return;
+  }
+
+  if (state.ab.a == null) {
     state.ab = { a: els.audio.currentTime || 0, b: null };
     showToast(`A 已设为 ${formatTime(state.ab.a)}`);
   } else {
@@ -380,6 +386,11 @@ function cycleMobileAB() {
     showToast(`B 已设为 ${formatTime(state.ab.b)}`);
   }
   updateABStatus();
+}
+
+function cancelABOnPageHidden() {
+  if (state.ab.a == null && state.ab.b == null) return;
+  resetAB();
 }
 
 function filteredSongs() {
@@ -1650,6 +1661,9 @@ window.addEventListener("resize", () => {
 document.addEventListener("touchstart", onSidebarSwipeStart, { passive: true });
 document.addEventListener("touchmove", onSidebarSwipeMove, { passive: false });
 document.addEventListener("touchend", onSidebarSwipeEnd, { passive: true });
+document.addEventListener("visibilitychange", cancelABOnPageHidden);
+window.addEventListener("pagehide", cancelABOnPageHidden);
+window.addEventListener("blur", cancelABOnPageHidden);
 
 initAndroidBridge();
 
