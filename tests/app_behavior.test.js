@@ -46,13 +46,11 @@ test("mobile A-B button cycles through A, B, cancel, then A again", () => {
   assert.doesNotMatch(cycleFunction, /state\.ab\.a == null \|\| \(state\.ab\.a != null && state\.ab\.b != null\)/);
 });
 
-test("A-B loop is cancelled when the app is hidden or left", () => {
-  assert.match(appJs, /function cancelABOnPageHidden\(\)/);
-  assert.match(appJs, /if \(state\.ab\.a == null && state\.ab\.b == null\) return;/);
-  assert.match(appJs, /resetAB\(\);/);
-  assert.match(appJs, /document\.addEventListener\("visibilitychange", cancelABOnPageHidden\)/);
-  assert.match(appJs, /window\.addEventListener\("pagehide", cancelABOnPageHidden\)/);
-  assert.match(appJs, /window\.addEventListener\("blur", cancelABOnPageHidden\)/);
+test("A-B loop remains armed when the app is hidden or left", () => {
+  assert.doesNotMatch(appJs, /function cancelABOnPageHidden\(\)/);
+  assert.doesNotMatch(appJs, /document\.addEventListener\("visibilitychange", cancelABOnPageHidden\)/);
+  assert.doesNotMatch(appJs, /window\.addEventListener\("pagehide", cancelABOnPageHidden\)/);
+  assert.doesNotMatch(appJs, /window\.addEventListener\("blur", cancelABOnPageHidden\)/);
 });
 
 test("lyric click seeks after audio metadata is ready", () => {
@@ -357,8 +355,8 @@ test("APK sync completion reloads the current song and exposes a bumped build", 
   assert.match(appJs, /if \(detail\.channel === "sync" && detail\.status === "done"\) \{[\s\S]*refreshSongsAfterLibraryMutation\(state\.current\?\.name \|\| ""\)/);
   assert.match(androidMain, /"同步完成，歌库已刷新，可离线使用"/);
   assert.doesNotMatch(androidMain, /刷新歌库后可离线使用/);
-  assert.match(androidBuildGradle, /versionCode 5/);
-  assert.match(androidBuildGradle, /versionName "0\.1\.4"/);
+  assert.match(androidBuildGradle, /versionCode 6/);
+  assert.match(androidBuildGradle, /versionName "0\.1\.5"/);
 });
 
 test("APK lyric search mirrors all web providers without the optional sync backend", () => {

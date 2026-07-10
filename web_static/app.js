@@ -388,11 +388,6 @@ function cycleMobileAB() {
   updateABStatus();
 }
 
-function cancelABOnPageHidden() {
-  if (state.ab.a == null && state.ab.b == null) return;
-  resetAB();
-}
-
 function filteredSongs() {
   return state.songs.filter((song) => {
     if (state.filter === "learned") return song.learned;
@@ -1661,9 +1656,6 @@ window.addEventListener("resize", () => {
 document.addEventListener("touchstart", onSidebarSwipeStart, { passive: true });
 document.addEventListener("touchmove", onSidebarSwipeMove, { passive: false });
 document.addEventListener("touchend", onSidebarSwipeEnd, { passive: true });
-document.addEventListener("visibilitychange", cancelABOnPageHidden);
-window.addEventListener("pagehide", cancelABOnPageHidden);
-window.addEventListener("blur", cancelABOnPageHidden);
 
 initAndroidBridge();
 
