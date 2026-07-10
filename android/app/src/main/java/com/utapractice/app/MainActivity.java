@@ -8,9 +8,15 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.graphics.Color;
+import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PowerManager;
 import android.provider.OpenableColumns;
 import android.util.Base64;
 import android.view.View;
@@ -69,18 +75,39 @@ public class MainActivity extends Activity {
     private static final int REQUEST_IMPORT_LYRICS = 4102;
     private static final int SEARCH_TIMEOUT_MS = 6000;
     private static final int SEARCH_AGGREGATE_TIMEOUT_MS = 7000;
+    private static final int LOOP_KEEP_ALIVE_INTERVAL_MS = 250;
 
     private WebView webView;
     private SharedPreferences prefs;
     private LocalAudioHttpServer localAudioServer;
+    private AudioManager audioManager;
+    private AudioFocusRequest audioFocusRequest;
+    private PowerManager.WakeLock loopWakeLock;
+    private boolean loopKeepAliveEnabled = false;
     private String pendingImportSongName = "";
     private String pendingImportKind = "";
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final AudioManager.OnAudioFocusChangeListener audioFocusChangeListener = focusChange -> {};
+    private final Runnable loopKeepAliveTick = new Runnable() {
+        @Override
+        public void run() {
+            if (!loopKeepAliveEnabled || webView == null) return;
+            webView.evaluateJavascript("window.UtaPracticeKeepAliveTick && window.UtaPracticeKeepAliveTick()", null);
+            mainHandler.postDelayed(this, LOOP_KEEP_ALIVE_INTERVAL_MS);
+        }
+    };
 
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (powerManager != null) {
+            loopWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "UtaPractice:ABLoop");
+            loopWakeLock.setReferenceCounted(false);
+        }
 
         webView = new WebView(this);
         setContentView(webView);
@@ -98,14 +125,72 @@ public class MainActivity extends Activity {
         webView.addJavascriptInterface(new AndroidBridge(), "UtaPracticeAndroid");
         webView.setWebChromeClient(new WebChromeClient());
         webView.setWebViewClient(new AppWebViewClient());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+        }
         startLocalAudioServer();
         webView.loadUrl(APP_ORIGIN + "/");
     }
 
     @Override
     protected void onDestroy() {
+        setLoopKeepAlive(false);
         if (localAudioServer != null) localAudioServer.shutdown();
         super.onDestroy();
+    }
+
+    private void setLoopKeepAlive(boolean enabled) {
+        if (loopKeepAliveEnabled == enabled) return;
+        loopKeepAliveEnabled = enabled;
+        mainHandler.removeCallbacks(loopKeepAliveTick);
+        if (enabled) {
+            requestPlaybackFocus();
+            acquireLoopWakeLock();
+            mainHandler.post(loopKeepAliveTick);
+        } else {
+            releaseLoopWakeLock();
+            abandonPlaybackFocus();
+        }
+    }
+
+    private void acquireLoopWakeLock() {
+        if (loopWakeLock != null && !loopWakeLock.isHeld()) {
+            loopWakeLock.acquire(10 * 60 * 1000L);
+        }
+    }
+
+    private void releaseLoopWakeLock() {
+        if (loopWakeLock != null && loopWakeLock.isHeld()) {
+            loopWakeLock.release();
+        }
+    }
+
+    private void requestPlaybackFocus() {
+        if (audioManager == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (audioFocusRequest == null) {
+                AudioAttributes attributes = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build();
+                audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(attributes)
+                    .setOnAudioFocusChangeListener(audioFocusChangeListener)
+                    .build();
+            }
+            audioManager.requestAudioFocus(audioFocusRequest);
+        } else {
+            audioManager.requestAudioFocus(audioFocusChangeListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+        }
+    }
+
+    private void abandonPlaybackFocus() {
+        if (audioManager == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioFocusRequest != null) {
+            audioManager.abandonAudioFocusRequest(audioFocusRequest);
+        } else {
+            audioManager.abandonAudioFocus(audioFocusChangeListener);
+        }
     }
 
     private void configureSystemBars() {
@@ -310,6 +395,11 @@ public class MainActivity extends Activity {
             } catch (Exception error) {
                 return "";
             }
+        }
+
+        @JavascriptInterface
+        public void setLoopKeepAlive(boolean enabled) {
+            runOnUiThread(() -> MainActivity.this.setLoopKeepAlive(enabled));
         }
 
         @JavascriptInterface

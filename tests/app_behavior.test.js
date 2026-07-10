@@ -53,6 +53,24 @@ test("A-B loop remains armed when the app is hidden or left", () => {
   assert.doesNotMatch(appJs, /window\.addEventListener\("blur", cancelABOnPageHidden\)/);
 });
 
+test("APK keeps active A-B looping alive when the app is locked or backgrounded", () => {
+  assert.match(androidManifest, /android\.permission\.WAKE_LOCK/);
+  assert.match(androidMain, /PowerManager\.WakeLock loopWakeLock/);
+  assert.match(androidMain, /PowerManager\.PARTIAL_WAKE_LOCK/);
+  assert.match(androidMain, /AudioFocusRequest/);
+  assert.match(androidMain, /AudioManager\.AUDIOFOCUS_GAIN/);
+  assert.match(androidMain, /setRendererPriorityPolicy\(WebView\.RENDERER_PRIORITY_IMPORTANT, false\)/);
+  assert.match(androidMain, /public void setLoopKeepAlive\(boolean enabled\)/);
+  assert.match(androidMain, /webView\.evaluateJavascript\("window\.UtaPracticeKeepAliveTick/);
+  assert.doesNotMatch(androidMain, /webView\.onPause\(\)|pauseTimers\(\)/);
+  assert.match(appJs, /function enforceABLoop\(\)/);
+  assert.match(appJs, /function syncAndroidLoopKeepAlive\(\)/);
+  assert.match(appJs, /window\.UtaPracticeAndroid\.setLoopKeepAlive/);
+  assert.match(appJs, /window\.UtaPracticeKeepAliveTick = \(\) =>/);
+  assert.match(appJs, /els\.audio\.addEventListener\("play", \(\) => \{[\s\S]*syncAndroidLoopKeepAlive\(\)/);
+  assert.match(appJs, /els\.audio\.addEventListener\("pause", \(\) => \{[\s\S]*syncAndroidLoopKeepAlive\(\)/);
+});
+
 test("lyric click seeks after audio metadata is ready", () => {
   assert.match(appJs, /function seekAudioTo\(/);
   assert.match(appJs, /loadedmetadata/);
@@ -78,7 +96,7 @@ test("player reports media playback failures instead of silently swallowing them
   assert.match(appJs, /function reportAudioPlaybackError\(error\)/);
   assert.match(appJs, /function playCurrentAudio\(\)/);
   assert.match(appJs, /els\.audio\.play\(\)\.catch\(reportAudioPlaybackError\)/);
-  assert.match(appJs, /els\.audio\.addEventListener\("error", \(\) => reportAudioPlaybackError\(\)\)/);
+  assert.match(appJs, /els\.audio\.addEventListener\("error", \(\) => \{[\s\S]*reportAudioPlaybackError\(\);[\s\S]*\}\);/);
   assert.match(appJs, /if \(els\.audio\.paused\) playCurrentAudio\(\);/);
 });
 
@@ -355,8 +373,8 @@ test("APK sync completion reloads the current song and exposes a bumped build", 
   assert.match(appJs, /if \(detail\.channel === "sync" && detail\.status === "done"\) \{[\s\S]*refreshSongsAfterLibraryMutation\(state\.current\?\.name \|\| ""\)/);
   assert.match(androidMain, /"同步完成，歌库已刷新，可离线使用"/);
   assert.doesNotMatch(androidMain, /刷新歌库后可离线使用/);
-  assert.match(androidBuildGradle, /versionCode 6/);
-  assert.match(androidBuildGradle, /versionName "0\.1\.5"/);
+  assert.match(androidBuildGradle, /versionCode 7/);
+  assert.match(androidBuildGradle, /versionName "0\.1\.6"/);
 });
 
 test("APK lyric search mirrors all web providers without the optional sync backend", () => {

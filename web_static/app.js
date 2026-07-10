@@ -347,6 +347,21 @@ function updateABStatus() {
   els.abStatus.textContent = active ? `A ${formatTime(a)} → B ${formatTime(b)}` : `A ${formatTime(a)} · B ${formatTime(b)}`;
   els.clearABButton.disabled = a == null && b == null;
   els.mobileABButton.classList.toggle("active", active);
+  syncAndroidLoopKeepAlive();
+}
+
+function abLoopActive() {
+  return state.ab.a != null && state.ab.b != null && state.ab.b > state.ab.a;
+}
+
+function syncAndroidLoopKeepAlive() {
+  if (!hasAndroidBridge() || typeof window.UtaPracticeAndroid.setLoopKeepAlive !== "function") return;
+  const enabled = audioPlayable(state.current) && abLoopActive() && !els.audio.paused;
+  try {
+    window.UtaPracticeAndroid.setLoopKeepAlive(enabled);
+  } catch {
+    // Native keep-alive is best-effort; playback still works without it.
+  }
 }
 
 function resetAB() {
@@ -736,12 +751,8 @@ async function refreshSongsAfterLibraryMutation(affectedName = "") {
 
 function highlightCurrentLyric() {
   if (!audioPlayable(state.current)) return;
+  if (enforceABLoop()) return;
   const currentTime = els.audio.currentTime;
-  if (state.ab.a != null && state.ab.b != null && state.ab.b > state.ab.a && currentTime >= state.ab.b) {
-    els.audio.currentTime = state.ab.a;
-    playCurrentAudio();
-    return;
-  }
   const lines = els.lyrics.querySelectorAll(".lyric-line");
   for (const line of lines) {
     const start = Number(line.dataset.startTime);
@@ -759,6 +770,22 @@ function highlightCurrentLyric() {
   state.activeLine?.classList.remove("active");
   state.activeLine = null;
 }
+
+function enforceABLoop() {
+  if (!audioPlayable(state.current) || !abLoopActive()) return false;
+  const currentTime = els.audio.currentTime || 0;
+  if (currentTime >= state.ab.b) {
+    els.audio.currentTime = state.ab.a;
+    playCurrentAudio();
+    return true;
+  }
+  return false;
+}
+
+window.UtaPracticeKeepAliveTick = () => {
+  enforceABLoop();
+  syncAndroidLoopKeepAlive();
+};
 
 async function saveMeta(patch, message) {
   if (!state.current) return;
@@ -1522,11 +1549,19 @@ if (els.apkSyncAll) {
 els.audio.addEventListener("timeupdate", highlightCurrentLyric);
 els.audio.addEventListener("play", () => {
   els.playButton.textContent = "II";
+  syncAndroidLoopKeepAlive();
 });
 els.audio.addEventListener("pause", () => {
   els.playButton.textContent = "▶";
+  syncAndroidLoopKeepAlive();
 });
-els.audio.addEventListener("error", () => reportAudioPlaybackError());
+els.audio.addEventListener("ended", () => {
+  syncAndroidLoopKeepAlive();
+});
+els.audio.addEventListener("error", () => {
+  syncAndroidLoopKeepAlive();
+  reportAudioPlaybackError();
+});
 els.playButton.addEventListener("click", () => {
   if (!audioPlayable(state.current)) return;
   if (els.audio.paused) playCurrentAudio();
