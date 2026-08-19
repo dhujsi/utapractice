@@ -1,6 +1,10 @@
 (() => {
   const panel = document.getElementById("neteasePanel");
   if (!panel) return;
+  if (window.UtaPracticeAndroid) {
+    panel.hidden = true;
+    return;
+  }
 
   const els = {
     bridgeUrl: document.getElementById("neteaseBridgeUrl"),
