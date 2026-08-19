@@ -6,6 +6,8 @@
     return;
   }
 
+  document.getElementById("neteaseWithLyrics")?.closest(".check-row")?.remove();
+
   const els = {
     bridgeUrl: document.getElementById("neteaseBridgeUrl"),
     saveBridge: document.getElementById("neteaseSaveBridge"),
@@ -18,7 +20,6 @@
     query: document.getElementById("neteaseQuery"),
     search: document.getElementById("neteaseSearch"),
     quality: document.getElementById("neteaseQuality"),
-    withLyrics: document.getElementById("neteaseWithLyrics"),
     results: document.getElementById("neteaseResults"),
     resultStatus: document.getElementById("neteaseResultStatus"),
     download: document.getElementById("neteaseDownload"),
@@ -234,11 +235,10 @@
           name: song.name,
           artist: song.artist,
           level: els.quality.value,
-          with_lyrics: els.withLyrics.checked,
+          with_lyrics: false,
         }),
       });
-      const lyricNote = payload.lyrics_saved ? "，歌词也已保存" : "";
-      setResultStatus(`已下载：${payload.filename}${lyricNote}`, "success");
+      setResultStatus(`已下载：${payload.filename}`, "success");
 
       if (typeof refreshSongsAfterLibraryMutation === "function") {
         await refreshSongsAfterLibraryMutation(payload.song_name).catch(() => {});
