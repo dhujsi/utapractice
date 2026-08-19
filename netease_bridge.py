@@ -6,6 +6,7 @@ import re
 import tempfile
 import time
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -19,7 +20,7 @@ CORS_ALLOW_ORIGIN = os.environ.get("CORS_ALLOW_ORIGIN", "*")
 HTTP_TIMEOUT = float(os.environ.get("HTTP_TIMEOUT", "20"))
 DOWNLOAD_TIMEOUT = float(os.environ.get("DOWNLOAD_TIMEOUT", "120"))
 MAX_DOWNLOAD_BYTES = int(os.environ.get("MAX_DOWNLOAD_BYTES", str(500 * 1024 * 1024)))
-AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".wav", ".aac", ".ogg"}
+AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".wav"}
 
 SONG_DIR.mkdir(parents=True, exist_ok=True)
 STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -89,10 +90,21 @@ def ncm_request(path, params=None, method="GET"):
         method=method,
     )
     with urlopen(req, timeout=HTTP_TIMEOUT) as response:
+        set_cookie_headers = response.headers.get_all("Set-Cookie") or []
         raw = response.read()
     payload = json.loads(raw.decode("utf-8"))
     if not isinstance(payload, dict):
         raise RuntimeError("网易云接口返回格式异常")
+    if set_cookie_headers:
+        jar = SimpleCookie()
+        for header_value in set_cookie_headers:
+            try:
+                jar.load(header_value)
+            except Exception:
+                continue
+        cookie_header = "; ".join(f"{morsel.key}={morsel.value}" for morsel in jar.values())
+        if cookie_header:
+            payload["_set_cookie"] = cookie_header
     return payload
 
 
@@ -147,7 +159,7 @@ def existing_audio_for_stem(stem):
 
 def extension_for(info, response):
     kind = str((info or {}).get("type") or "").lower().strip(".")
-    if kind in {"mp3", "flac", "m4a", "wav", "aac", "ogg"}:
+    if kind in {"mp3", "flac", "m4a", "wav"}:
         return "." + kind
 
     content_type = (response.headers.get_content_type() or "").lower()
@@ -314,7 +326,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(400, {"error": "缺少二维码 key"})
                 payload = ncm_request("/login/qr/check", {"key": key})
                 code = payload.get("code")
-                cookie = str(payload.get("cookie") or "").strip()
+                cookie = str(payload.pop("_set_cookie", "") or payload.get("cookie") or "").strip()
                 if code == 803 and cookie:
                     save_cookie(cookie)
                 return self.send_json(
