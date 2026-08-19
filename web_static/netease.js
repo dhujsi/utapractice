@@ -271,3 +271,9 @@
   setBridgeBase(localStorage.getItem(storageKey) || defaultBridgeBase());
   refreshLoginStatus();
 })();
+
+(() => {
+  const script = document.createElement("script");
+  script.src = "/web_static/library_workspace.js";
+  document.body.appendChild(script);
+})();
