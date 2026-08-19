@@ -7,6 +7,7 @@
   <title>练歌房</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/web_static/app.css">
+  <link rel="stylesheet" href="/web_static/netease.css">
 </head>
 <body>
   <div class="app-shell" id="appShell">
@@ -112,6 +113,49 @@
             <button type="button" id="libraryEditLyrics">编辑歌词</button>
           </div>
           <button type="button" id="libraryDeleteSong" class="danger wide-button">删除这首歌</button>
+        </section>
+
+        <section class="panel netease-panel" id="neteasePanel">
+          <h2>网易云下载</h2>
+          <p class="status-line" id="neteaseStatus">正在检查网易云登录状态...</p>
+          <div class="button-row">
+            <button type="button" id="neteaseLogin">扫码登录</button>
+            <button type="button" id="neteaseLogout" hidden>退出网易云</button>
+          </div>
+          <div class="netease-qr" id="neteaseQrWrap" hidden>
+            <img id="neteaseQrImage" alt="网易云登录二维码">
+            <p class="status-line" id="neteaseQrMessage">等待扫码...</p>
+          </div>
+          <label class="field">
+            <span>搜索歌曲 / 歌手</span>
+            <input id="neteaseQuery" type="search" autocomplete="off" placeholder="输入歌名或歌手">
+          </label>
+          <button type="button" id="neteaseSearch" class="wide-button">搜索网易云</button>
+          <div class="netease-results" id="neteaseResults"></div>
+          <div class="netease-download-options">
+            <label class="field">
+              <span>下载音质</span>
+              <select id="neteaseQuality">
+                <option value="exhigh" selected>极高 / 320 kbps</option>
+                <option value="lossless">无损</option>
+                <option value="hires">Hi-Res</option>
+              </select>
+            </label>
+            <label class="check-row">
+              <input id="neteaseWithLyrics" type="checkbox" checked>
+              <span>同时保存 LRC</span>
+            </label>
+          </div>
+          <p class="netease-result-status" id="neteaseResultStatus">搜索后点一首，再下载到本地歌库。</p>
+          <button type="button" id="neteaseDownload" class="wide-button" disabled>下载选中歌曲</button>
+          <details class="netease-connection">
+            <summary>连接设置</summary>
+            <label class="field">
+              <span>网易云桥接地址</span>
+              <input id="neteaseBridgeUrl" type="url" placeholder="http://your-server.local:8503">
+            </label>
+            <button type="button" id="neteaseSaveBridge" class="wide-button">保存并重连</button>
+          </details>
         </section>
 
         <section class="panel">
@@ -342,5 +386,6 @@
 
   <div class="toast" id="toast" hidden></div>
   <script src="/web_static/app.js"></script>
+  <script src="/web_static/netease.js"></script>
 </body>
 </html>
