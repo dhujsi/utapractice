@@ -236,9 +236,12 @@ def api_rename_song(name):
         return jsonify({"error": "这首歌有正在运行的歌词生成任务，请任务结束后再改名"}), 409
 
     new_key = _name_key(new_name)
-    for existing in songs:
-        if existing != old_name and _name_key(existing) == new_key:
-            return jsonify({"error": f"歌库里已经有「{existing}」"}), 409
+    same_key_existing = [existing for existing in songs if existing != old_name and _name_key(existing) == new_key]
+    merging_case_split = bool(same_key_existing) and _name_key(old_name) == new_key
+    if same_key_existing and not merging_case_split:
+        return jsonify({"error": f"歌库里已经有「{same_key_existing[0]}」"}), 409
+    if len(same_key_existing) > 1:
+        return jsonify({"error": "存在多个仅大小写不同的同名条目，请先手动整理文件"}), 409
 
     pairs = []
     for source, suffix in _song_files(old_name):
@@ -253,7 +256,7 @@ def api_rename_song(name):
         pairs.append((source, target))
 
     db = core.load_db()
-    if new_name in db and new_name != old_name:
+    if new_name in db and new_name != old_name and not merging_case_split:
         return jsonify({"error": f"歌名「{new_name}」已有元数据记录，请先处理该条目"}), 409
 
     staged = []
@@ -285,7 +288,13 @@ def api_rename_song(name):
         core.write_json_path(workspace_path, workspace)
 
     if old_name in db:
-        db[new_name] = db.pop(old_name)
+        old_info = db.pop(old_name)
+        if new_name in db and merging_case_split:
+            merged_info = dict(old_info)
+            merged_info.update(db[new_name])
+            db[new_name] = merged_info
+        else:
+            db[new_name] = old_info
         core.save_db(db)
 
     _rename_job_records(old_name, new_name)
@@ -298,6 +307,7 @@ def api_rename_song(name):
             "old_name": old_name,
             "song_name": new_name,
             "files": [target.name for _, target in pairs],
+            "merged_case_split": merging_case_split,
         }
     )
 
