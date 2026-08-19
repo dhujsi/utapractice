@@ -1,0 +1,25 @@
+FROM rust:1.85-bookworm AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone https://github.com/SPlayer-Dev/ncm-api-rs.git /src \
+    && cd /src \
+    && git checkout 133b65bfe482e41ebccf018870d3fce07bf58eb3 \
+    && cargo build --release --features server --bin ncm-server
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/target/release/ncm-server /usr/local/bin/ncm-server
+
+ENV NCM_HOST=0.0.0.0
+ENV NCM_PORT=3000
+ENV CORS_ALLOW_ORIGIN=*
+
+EXPOSE 3000
+CMD ["ncm-server"]
