@@ -1,25 +1,21 @@
-FROM rust:1.85-bookworm AS builder
+FROM node:22-alpine
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates pkg-config libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache git tini \
+    && npm install -g pnpm@9
 
-RUN git clone https://github.com/SPlayer-Dev/ncm-api-rs.git /src \
-    && cd /src \
-    && git checkout 133b65bfe482e41ebccf018870d3fce07bf58eb3 \
-    && cargo build --release --features server --bin ncm-server
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV ENABLE_GENERAL_UNBLOCK=false
 
-FROM debian:bookworm-slim
+WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+RUN git clone https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced.git . \
+    && git checkout 4a91f77e622fe22e95dea7c9b73f0eeb27f2f0aa \
+    && rm -rf .git \
+    && chown -R node:node /app
 
-COPY --from=builder /src/target/release/ncm-server /usr/local/bin/ncm-server
-
-ENV NCM_HOST=0.0.0.0
-ENV NCM_PORT=3000
-ENV CORS_ALLOW_ORIGIN=*
+USER node
+RUN pnpm install --frozen-lockfile --prod --ignore-scripts
 
 EXPOSE 3000
-CMD ["ncm-server"]
+CMD ["/sbin/tini", "--", "node", "app.js"]
