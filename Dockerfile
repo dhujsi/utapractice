@@ -13,4 +13,4 @@ COPY . .
 
 EXPOSE 8501
 
-CMD ["python", "web_app.py"]
+CMD ["python", "web_app_ext.py"]
