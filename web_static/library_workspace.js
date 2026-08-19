@@ -33,12 +33,39 @@
   `;
   librarySidePage.insertBefore(catalogPanel, managementPanel || librarySidePage.firstChild);
 
+  let renameInput = null;
+  let renameButton = null;
   if (managementPanel) {
     managementPanel.classList.add('library-management-panel');
     const heading = managementPanel.querySelector('h2');
     if (heading) heading.textContent = '当前条目';
     const oldSelectorField = librarySongSelect.closest('.field');
     if (oldSelectorField) oldSelectorField.hidden = true;
+
+    const info = managementPanel.querySelector('#librarySongInfo');
+    const renameField = document.createElement('label');
+    renameField.className = 'field library-rename-field';
+    renameField.innerHTML = `
+      <span>歌名</span>
+      <input id="libraryRenameInput" type="text" autocomplete="off" placeholder="修改歌名或添加版本标注">
+    `;
+    renameButton = document.createElement('button');
+    renameButton.id = 'libraryRenameSong';
+    renameButton.type = 'button';
+    renameButton.className = 'wide-button';
+    renameButton.textContent = '修改歌名';
+    if (info) {
+      info.insertAdjacentElement('afterend', renameField);
+      renameField.insertAdjacentElement('afterend', renameButton);
+    } else {
+      managementPanel.append(renameField, renameButton);
+    }
+    renameInput = renameField.querySelector('#libraryRenameInput');
+
+    if (window.UtaPracticeAndroid) {
+      renameField.hidden = true;
+      renameButton.hidden = true;
+    }
   }
 
   const libraryView = document.createElement('section');
@@ -81,6 +108,17 @@
     }
   }
 
+  function nameKey(value) {
+    return String(value || '').normalize('NFKC').toLocaleLowerCase();
+  }
+
+  function localSongName(value) {
+    const key = nameKey(value);
+    if (!key) return '';
+    const matches = allSongs().filter((song) => nameKey(song?.name) === key);
+    return matches.length === 1 ? matches[0].name : '';
+  }
+
   function songMeta(song) {
     const audio = song?.has_audio ? (song.audio_playable === false ? '音频不可用' : '有音频') : '无音频';
     const lyrics = song?.has_lyrics ? `${String(song.lyrics_type || '').toUpperCase() || '有'} 歌词` : '无歌词';
@@ -97,11 +135,21 @@
     }
   }
 
+  function syncRenameInput() {
+    if (!renameInput || !renameButton) return;
+    const selectedName = librarySongSelect.value;
+    const song = allSongs().find((item) => item.name === selectedName);
+    renameInput.value = song?.name || '';
+    renameInput.disabled = !song;
+    renameButton.disabled = !song;
+  }
+
   function syncSelectedRow() {
     const selectedName = librarySongSelect.value;
     librarySongList.querySelectorAll('.library-song-row').forEach((row) => {
       row.classList.toggle('selected', row.dataset.songName === selectedName);
     });
+    syncRenameInput();
   }
 
   function renderLibraryList() {
@@ -119,6 +167,7 @@
       empty.className = 'library-list-empty';
       empty.textContent = songs.length ? '没有匹配的歌曲' : '还没有歌曲';
       librarySongList.appendChild(empty);
+      syncRenameInput();
       return;
     }
 
@@ -152,6 +201,55 @@
     syncSelectedRow();
   }
 
+  async function renameSelectedSong() {
+    const oldName = librarySongSelect.value;
+    const newName = String(renameInput?.value || '').trim();
+    const song = allSongs().find((item) => item.name === oldName);
+    if (!song) return;
+    if (!newName) {
+      showToast('歌名不能为空');
+      renameInput?.focus();
+      return;
+    }
+    if (newName === oldName) {
+      showToast('歌名没有变化');
+      return;
+    }
+
+    renameButton.disabled = true;
+    try {
+      const result = await requestJson(`/api/songs/${encodeURIComponent(oldName)}/rename`, {
+        method: 'POST',
+        body: JSON.stringify({ new_name: newName }),
+      });
+      const renamedName = result.song_name || newName;
+      if (state.current?.name === oldName) state.current.name = renamedName;
+      if (document.getElementById('workspaceSongName')?.value === oldName) {
+        document.getElementById('workspaceSongName').value = renamedName;
+      }
+      await loadSongs();
+      const renamedSong = allSongs().find((item) => item.name === renamedName);
+      if (renamedSong) ensureSelectOption(renamedSong);
+      librarySongSelect.value = renamedName;
+      librarySongSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      if (state.current?.name === renamedName) await loadSong(renamedName);
+      renderLibraryList();
+      showToast(`已改名为「${renamedName}」`);
+    } catch (error) {
+      showToast(error.message || '修改歌名失败');
+      syncRenameInput();
+    } finally {
+      renameButton.disabled = false;
+    }
+  }
+
+  renameButton?.addEventListener('click', renameSelectedSong);
+  renameInput?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    renameSelectedSong();
+  });
+
   let renderQueued = false;
   function scheduleLibraryRender() {
     if (renderQueued) return;
@@ -167,6 +265,36 @@
   if (libraryInfo) new MutationObserver(syncSelectedRow).observe(libraryInfo, { childList: true, subtree: true, characterData: true });
   libraryListFilter.addEventListener('input', renderLibraryList);
   librarySongSelect.addEventListener('change', syncSelectedRow);
+
+  // Prefer the real local spelling whenever a song already exists. If there is no
+  // local song yet, selecting a search result adopts the provider's official title.
+  try {
+    const coreWorkspaceName = workspaceName;
+    workspaceName = function canonicalWorkspaceName() {
+      const raw = coreWorkspaceName();
+      return localSongName(raw) || raw;
+    };
+
+    const coreSelectSearchResult = selectSearchResult;
+    selectSearchResult = async function selectSearchResultWithCanonicalTitle(index) {
+      const result = state?.workspace?.results?.[index];
+      if (result) {
+        const input = document.getElementById('workspaceSongName');
+        const current = String(input?.value || '').trim();
+        const local = localSongName(current) || localSongName(result.title);
+        if (input && local) input.value = local;
+        else if (input && result.title) input.value = result.title;
+      }
+      return coreSelectSearchResult(index);
+    };
+  } catch {
+    // The generator may be absent in an APK-only shell.
+  }
+
+  const providerSelect = document.getElementById('workspaceProvider');
+  if (providerSelect && Array.from(providerSelect.options).some((option) => option.value === 'netease')) {
+    providerSelect.value = 'netease';
+  }
 
   function syncMainViews(page) {
     playerView.hidden = page !== 'practice';
