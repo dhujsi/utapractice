@@ -6,109 +6,15 @@
   background: #fff;
 }
 
+.library-workspace-header,
+.library-detail-column {
+  max-width: 1280px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .library-workspace-header {
   margin-bottom: 22px;
-}
-
-.library-main-grid {
-  display: grid;
-  grid-template-columns: minmax(300px, 0.78fr) minmax(460px, 1.22fr);
-  gap: 22px;
-  max-width: 1280px;
-  margin: 0 auto;
-  align-items: start;
-}
-
-.library-catalog {
-  position: sticky;
-  top: 0;
-  min-width: 0;
-}
-
-.library-list-heading {
-  min-height: 40px;
-}
-
-.library-list-heading .meta-line {
-  margin-top: 0;
-}
-
-.library-filter-field {
-  margin-top: 10px;
-}
-
-.library-view input[type="search"] {
-  width: 100%;
-  min-height: 40px;
-  border: 1px solid #d8dee9;
-  border-radius: 8px;
-  background: #fff;
-  padding: 8px 12px;
-  color: #182033;
-}
-
-.library-song-list {
-  display: grid;
-  gap: 8px;
-  margin-top: 14px;
-  max-height: calc(100dvh - 230px);
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-.library-song-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  width: 100%;
-  min-height: 58px;
-  padding: 10px 12px;
-  text-align: left;
-  border: 1px solid #d8dee9;
-  background: #fff;
-}
-
-.library-song-row.selected {
-  border-color: #ff4b55;
-  box-shadow: 0 0 0 1px #ff4b55 inset;
-  background: #fffafa;
-}
-
-.library-song-row-main {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.library-song-row-main strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 15px;
-  line-height: 1.35;
-}
-
-.library-song-row-main small {
-  color: #667085;
-  font-size: 12px;
-  line-height: 1.35;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.library-song-row-state {
-  color: #667085;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.library-list-empty {
-  margin: 22px 0;
-  color: #667085;
-  font-size: 13px;
-  text-align: center;
 }
 
 .library-detail-column {
@@ -127,6 +33,101 @@
 .library-view .panel:first-of-type {
   border-top: 1px solid #e1e6ee;
   padding-top: 20px;
+}
+
+.library-sidebar-catalog {
+  padding-bottom: 18px;
+}
+
+.library-list-heading {
+  min-height: 34px;
+}
+
+.library-list-heading .meta-line {
+  margin-top: 0;
+}
+
+.library-filter-field {
+  margin-top: 10px;
+}
+
+.library-sidebar-catalog input[type="search"],
+.library-view input[type="search"] {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid #d8dee9;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px 12px;
+  color: #182033;
+}
+
+.library-song-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  max-height: min(44dvh, 440px);
+  overflow-y: auto;
+  padding-right: 3px;
+}
+
+.library-song-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 10px;
+  text-align: left;
+  border: 1px solid #d8dee9;
+  background: #fff;
+}
+
+.library-song-row.selected {
+  border-color: #ff4b55;
+  box-shadow: 0 0 0 1px #ff4b55 inset;
+  background: #fffafa;
+}
+
+.library-song-row-main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.library-song-row-main strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.library-song-row-main small {
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-song-row-state {
+  color: #667085;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.library-list-empty {
+  margin: 18px 0;
+  color: #667085;
+  font-size: 13px;
+  text-align: center;
+}
+
+.library-management-panel {
+  padding-top: 18px;
 }
 
 .library-management-panel .button-row {
@@ -154,10 +155,6 @@
   margin-bottom: 7px;
 }
 
-.library-side-note .meta-line {
-  line-height: 1.55;
-}
-
 @media (hover: hover) and (pointer: fine) {
   .library-song-row:hover {
     background: #f8fafc;
@@ -169,10 +166,6 @@
 }
 
 @media (max-width: 980px) {
-  .library-main-grid {
-    grid-template-columns: minmax(260px, 0.72fr) minmax(380px, 1.28fr);
-  }
-
   .library-import-grid {
     grid-template-columns: 1fr;
   }
@@ -183,22 +176,11 @@
     padding: calc(56px + var(--safe-top)) 16px calc(28px + var(--safe-bottom));
   }
 
-  .library-main-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .library-catalog {
-    position: static;
-  }
-
   .library-song-list {
-    max-height: 42dvh;
+    max-height: 40dvh;
   }
 
-  .library-import-grid {
-    grid-template-columns: 1fr;
-  }
-
+  .library-import-grid,
   .library-view .netease-download-options {
     grid-template-columns: 1fr;
   }

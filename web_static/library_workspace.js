@@ -13,45 +13,25 @@
     document.head.appendChild(link);
   }
 
-  const libraryView = document.createElement('section');
-  libraryView.className = 'library-view';
-  libraryView.id = 'libraryView';
-  libraryView.hidden = true;
-  libraryView.innerHTML = `
-    <div class="workspace-header library-workspace-header">
-      <div>
-        <p class="meta-line">本地歌库</p>
-        <h2>歌曲、下载与导入</h2>
-      </div>
-      <p class="status-line" id="libraryWorkspaceStatus">正在读取歌库...</p>
-    </div>
-    <div class="library-main-grid">
-      <section class="library-catalog" aria-label="本地歌曲列表">
-        <div class="section-heading library-list-heading">
-          <h2>歌曲列表</h2>
-          <span class="meta-line" id="librarySongCount"></span>
-        </div>
-        <label class="field library-filter-field">
-          <span>筛选歌名</span>
-          <input id="libraryListFilter" type="search" autocomplete="off" placeholder="输入歌名筛选">
-        </label>
-        <div class="library-song-list" id="librarySongList"></div>
-      </section>
-      <div class="library-detail-column" id="libraryDetailColumn"></div>
-    </div>
-  `;
-  main.insertBefore(libraryView, workspaceView);
-
-  const detailColumn = libraryView.querySelector('#libraryDetailColumn');
-  const librarySongList = libraryView.querySelector('#librarySongList');
-  const libraryListFilter = libraryView.querySelector('#libraryListFilter');
-  const librarySongCount = libraryView.querySelector('#librarySongCount');
-  const libraryWorkspaceStatus = libraryView.querySelector('#libraryWorkspaceStatus');
-
   const directPanels = Array.from(librarySidePage.querySelectorAll(':scope > .panel'));
   const managementPanel = directPanels.find((panel) => panel.querySelector('#librarySongSelect')) || directPanels[0];
   const neteasePanel = document.getElementById('neteasePanel');
-  const otherPanels = directPanels.filter((panel) => panel !== managementPanel && panel !== neteasePanel);
+  const importPanels = directPanels.filter((panel) => panel !== managementPanel && panel !== neteasePanel);
+
+  const catalogPanel = document.createElement('section');
+  catalogPanel.className = 'panel library-sidebar-catalog';
+  catalogPanel.innerHTML = `
+    <div class="section-heading library-list-heading">
+      <h2>歌库</h2>
+      <span class="meta-line" id="librarySongCount"></span>
+    </div>
+    <label class="field library-filter-field">
+      <span>筛选歌名</span>
+      <input id="libraryListFilter" type="search" autocomplete="off" placeholder="输入歌名筛选">
+    </label>
+    <div class="library-song-list" id="librarySongList"></div>
+  `;
+  librarySidePage.insertBefore(catalogPanel, managementPanel || librarySidePage.firstChild);
 
   if (managementPanel) {
     managementPanel.classList.add('library-management-panel');
@@ -59,25 +39,39 @@
     if (heading) heading.textContent = '当前条目';
     const oldSelectorField = librarySongSelect.closest('.field');
     if (oldSelectorField) oldSelectorField.hidden = true;
-    detailColumn.appendChild(managementPanel);
   }
 
+  const libraryView = document.createElement('section');
+  libraryView.className = 'library-view';
+  libraryView.id = 'libraryView';
+  libraryView.hidden = true;
+  libraryView.innerHTML = `
+    <div class="workspace-header library-workspace-header">
+      <div>
+        <p class="meta-line">歌库工具</p>
+        <h2>网易云下载与本地导入</h2>
+      </div>
+      <p class="status-line" id="libraryWorkspaceStatus">下载完成后会直接进入左侧歌库。</p>
+    </div>
+    <div class="library-detail-column" id="libraryDetailColumn"></div>
+  `;
+  main.insertBefore(libraryView, workspaceView);
+
+  const detailColumn = libraryView.querySelector('#libraryDetailColumn');
   if (neteasePanel) {
     neteasePanel.classList.add('library-source-panel');
     detailColumn.appendChild(neteasePanel);
   }
-
-  if (otherPanels.length) {
+  if (importPanels.length) {
     const importGrid = document.createElement('div');
     importGrid.className = 'library-import-grid';
-    otherPanels.forEach((panel) => importGrid.appendChild(panel));
+    importPanels.forEach((panel) => importGrid.appendChild(panel));
     detailColumn.appendChild(importGrid);
   }
 
-  const sideNote = document.createElement('section');
-  sideNote.className = 'panel library-side-note';
-  sideNote.innerHTML = '<h2>歌库</h2><p class="meta-line">歌曲列表、网易云下载和本地导入已经移到右侧工作区。</p>';
-  librarySidePage.appendChild(sideNote);
+  const librarySongList = catalogPanel.querySelector('#librarySongList');
+  const libraryListFilter = catalogPanel.querySelector('#libraryListFilter');
+  const librarySongCount = catalogPanel.querySelector('#librarySongCount');
 
   function allSongs() {
     try {
@@ -90,7 +84,7 @@
   function songMeta(song) {
     const audio = song?.has_audio ? (song.audio_playable === false ? '音频不可用' : '有音频') : '无音频';
     const lyrics = song?.has_lyrics ? `${String(song.lyrics_type || '').toUpperCase() || '有'} 歌词` : '无歌词';
-    return `${audio} · ${lyrics} · ${song?.learned ? '已学会' : '未学会'}`;
+    return `${audio} · ${lyrics}`;
   }
 
   function ensureSelectOption(song) {
@@ -118,13 +112,12 @@
       : songs;
 
     librarySongList.innerHTML = '';
-    librarySongCount.textContent = query ? `${shown.length} / ${songs.length}` : `${songs.length} 首`;
-    libraryWorkspaceStatus.textContent = songs.length ? `本地共 ${songs.length} 首歌曲` : '本地歌库还是空的';
+    librarySongCount.textContent = query ? `${shown.length}/${songs.length}` : `${songs.length} 首`;
 
     if (!shown.length) {
       const empty = document.createElement('p');
       empty.className = 'library-list-empty';
-      empty.textContent = songs.length ? '没有匹配的歌曲' : '还没有歌曲，可以从右侧下载或导入。';
+      empty.textContent = songs.length ? '没有匹配的歌曲' : '还没有歌曲';
       librarySongList.appendChild(empty);
       return;
     }
@@ -135,18 +128,18 @@
       button.className = 'library-song-row';
       button.dataset.songName = song.name;
 
-      const main = document.createElement('span');
-      main.className = 'library-song-row-main';
+      const mainText = document.createElement('span');
+      mainText.className = 'library-song-row-main';
       const title = document.createElement('strong');
       title.textContent = song.name;
       const meta = document.createElement('small');
       meta.textContent = songMeta(song);
-      main.append(title, meta);
+      mainText.append(title, meta);
 
-      const stateLabel = document.createElement('span');
-      stateLabel.className = 'library-song-row-state';
-      stateLabel.textContent = song.learned ? '已学会' : '';
-      button.append(main, stateLabel);
+      const learned = document.createElement('span');
+      learned.className = 'library-song-row-state';
+      learned.textContent = song.learned ? '已学会' : '';
+      button.append(mainText, learned);
 
       button.addEventListener('click', () => {
         ensureSelectOption(song);
