@@ -1,0 +1,89 @@
+.netease-panel .status-line[data-kind="success"],
+.netease-panel .netease-result-status[data-kind="success"] {
+  font-weight: 600;
+}
+
+.netease-panel .status-line[data-kind="error"],
+.netease-panel .netease-result-status[data-kind="error"] {
+  font-weight: 600;
+}
+
+.netease-connection {
+  margin-top: 10px;
+}
+
+.netease-connection summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.netease-qr {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 12px 0 4px;
+}
+
+.netease-qr img {
+  width: 180px;
+  max-width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  border-radius: 12px;
+}
+
+.netease-results {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.netease-result {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  padding: 10px 12px;
+}
+
+.netease-result.selected {
+  outline: 2px solid currentColor;
+  outline-offset: -2px;
+}
+
+.netease-result-main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.netease-result-main strong,
+.netease-result-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.netease-result-main small,
+.netease-result-duration,
+.netease-empty,
+.netease-result-status {
+  font-size: 0.85rem;
+  opacity: 0.72;
+}
+
+.netease-download-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.netease-result-status {
+  min-height: 1.25em;
+  margin: 8px 0;
+}

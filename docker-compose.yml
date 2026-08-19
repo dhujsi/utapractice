@@ -17,3 +17,29 @@ services:
       watchcow.service_port: "8502"
       watchcow.protocol: "http"
       watchcow.path: "/"
+
+  ncm-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.ncm
+    container_name: utapractice-ncm-api
+    restart: always
+
+  netease-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.netease
+    container_name: utapractice-netease-bridge
+    ports:
+      - "8503:8503"
+    volumes:
+      - ./data/songs:/data/songs
+      - ./data/netease:/data/state
+    environment:
+      NCM_API_BASE: http://ncm-api:3000
+      SONG_DIR: /data/songs
+      STATE_PATH: /data/state/session.json
+      PORT: "8503"
+    depends_on:
+      - ncm-api
+    restart: always
