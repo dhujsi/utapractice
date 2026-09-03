@@ -327,6 +327,56 @@ def parse_model_json(content):
     raise ValueError(f"模型返回的不是合法 JSON：{last_error}；返回片段：{excerpt}")
 
 
+class FatalJobError(ValueError):
+    """不可恢复的任务错误（余额不足、密钥无效等），应立刻中止整批生成而不是逐段重试。"""
+
+
+def api_error_status(exc):
+    """尽量从 OpenAI 异常里取出 HTTP 状态码。"""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    message = str(exc)
+    match = re.search(r"Error code: (\d+)", message)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"HTTP (\d{3})", message, flags=re.I)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def is_fatal_api_error(exc):
+    """余额不足 / 密钥无效这类错误重试多少次都一样，必须直接中止并给出明确提示。"""
+    status = api_error_status(exc)
+    if status in (401, 402, 403):
+        return True
+    message = str(exc).lower()
+    return any(
+        hint in message
+        for hint in ("insufficient balance", "invalid api key", "authentication", "invalid_request_error", "api key")
+    )
+
+
+def friendly_api_error(exc):
+    message = str(exc)
+    status = api_error_status(exc)
+    lowered = message.lower()
+    if status == 402 or "insufficient balance" in lowered or "insufficient_balance" in lowered:
+        return "DeepSeek API 余额不足（Insufficient Balance），请充值后再重试"
+    if status == 401 or "invalid api key" in lowered or "authentication" in lowered:
+        return "DeepSeek API Key 无效或未授权（401），请在「生成歌词 → 接口设置」检查"
+    if status == 403:
+        return "DeepSeek API 拒绝了请求（403），请检查密钥权限或网络"
+    if status == 429:
+        return "DeepSeek API 触发限流（429），请稍后重试或降低并发"
+    return message
+
+
+def is_empty_content_error(exc):
+    return "空内容" in str(exc)
+
+
 def chat_json(client, model, system_prompt, payload, max_tokens=None, json_object=False):
     kwargs = {
         "model": model,
@@ -1454,6 +1504,8 @@ def perform_ruby_from_rows(payload, report=lambda _message: None, job_id=None):
     concurrency = max(1, min(concurrency, 8))
     max_attempts = int(payload.get("max_attempts") or 4)
     max_attempts = max(1, min(max_attempts, 6))
+    chunk_size = int(payload.get("chunk_size") or 8)
+    chunk_size = max(2, min(chunk_size, 20))
     if not song_name:
         raise ValueError("Song name is required")
 
@@ -1488,7 +1540,7 @@ def perform_ruby_from_rows(payload, report=lambda _message: None, job_id=None):
 
     client_args = {"api_key": settings["api_key"], "base_url": settings.get("base_url") or None}
     model = settings.get("model") or "deepseek-v4-pro"
-    chunks = chunk_rows(normalized_rows, size=4, context=2)
+    chunks = chunk_rows(normalized_rows, size=chunk_size, context=2)
     generated_by_index = {}
     chunk_errors = []
 
@@ -1557,7 +1609,9 @@ def perform_ruby_from_rows(payload, report=lambda _message: None, job_id=None):
         for attempt in range(1, max_attempts + 1):
             raise_if_stopped(job_id)
             request_payload = payload_data
-            if attempt > 1:
+            # 空内容多为瞬时抖动：直接原样重试，避免把空的 previous_output 丢给回修提示词。
+            use_repair = attempt > 1 and not is_empty_content_error(last_error)
+            if use_repair:
                 report(f"第 {chunk_number}/{len(chunks)} 段回修 {attempt - 1}/{max_attempts - 1}")
                 request_payload = {
                     "task": "Repair invalid JSON from previous failed generation.",
@@ -1577,13 +1631,18 @@ def perform_ruby_from_rows(payload, report=lambda _message: None, job_id=None):
                 return normalize_workspace_generated_chunk(result, chunk["target_rows"], report)
             except RuntimeError:
                 raise
+            except FatalJobError:
+                raise
             except Exception as exc:
+                if is_fatal_api_error(exc):
+                    raise FatalJobError(friendly_api_error(exc)) from exc
                 last_error = exc
                 report(f"第 {chunk_number}/{len(chunks)} 段第 {attempt}/{max_attempts} 次失败：{exc}")
                 if attempt < max_attempts:
                     time.sleep(min(2 * attempt, 6))
         raise ValueError(f"第 {chunk_number}/{len(chunks)} 段连续 {max_attempts} 次失败：{last_error}")
 
+    fatal_error = None
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         futures = {
             executor.submit(generate_chunk, chunk_number, chunk): (chunk_number, chunk)
@@ -1600,6 +1659,13 @@ def perform_ruby_from_rows(payload, report=lambda _message: None, job_id=None):
                 report(f"第 {chunk_number}/{len(chunks)} 段完成")
             except RuntimeError:
                 raise
+            except FatalJobError as exc:
+                fatal_error = exc
+                for other in futures:
+                    other.cancel()
+                executor.shutdown(wait=False, cancel_futures=True)
+                report(f"检测到不可恢复错误，任务中止：{exc}")
+                break
             except Exception as exc:
                 message = f"第 {chunk_number}/{len(chunks)} 段失败：{exc}"
                 report(message)
@@ -1607,6 +1673,13 @@ def perform_ruby_from_rows(payload, report=lambda _message: None, job_id=None):
             completed += 1
             progress = 1 + round(completed / max(len(chunks), 1) * 94)
             update_job(job_id, progress=progress, message=f"已完成 {completed}/{len(chunks)} 段")
+
+    if fatal_error:
+        workspace["status"] = "generation_failed"
+        workspace["errors"] = [{"error": str(fatal_error)}]
+        workspace["updated_at"] = now_iso()
+        write_json_path(path, workspace)
+        raise fatal_error
 
     if chunk_errors:
         workspace["status"] = "generation_failed"
@@ -2212,6 +2285,8 @@ def run_convert_job_v2(job_id):
         )
     except Exception as exc:
         duration_seconds = round((datetime.now().astimezone() - started_at).total_seconds(), 1)
+        if is_fatal_api_error(exc):
+            exc = ValueError(friendly_api_error(exc))
         append_job_step(job_id, f"生成失败：{exc}")
         update_job(
             job_id,

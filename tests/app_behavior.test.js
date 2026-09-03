@@ -474,3 +474,18 @@ test("failed or stopped lyric generation jobs expose a retry action that re-queu
   assert.match(appJs, /textContent = "重试"/);
   assert.match(appCss, /\.job-retry-button/);
 });
+
+test("workspace ruby generation uses larger configurable chunks and fails fast on fatal API errors", () => {
+  assert.match(webApp, /chunk_size = int\(payload\.get\("chunk_size"\) or 8\)/);
+  assert.match(webApp, /chunk_size = max\(2, min\(chunk_size, 20\)\)/);
+  assert.match(webApp, /chunk_rows\(normalized_rows, size=chunk_size, context=2\)/);
+  assert.match(webApp, /class FatalJobError\(ValueError\)/);
+  assert.match(webApp, /def is_fatal_api_error\(exc\):/);
+  assert.match(webApp, /def friendly_api_error\(exc\):/);
+  assert.match(webApp, /if is_fatal_api_error\(exc\):\n\s+raise FatalJobError\(friendly_api_error\(exc\)\) from exc/);
+  assert.match(webApp, /use_repair = attempt > 1 and not is_empty_content_error\(last_error\)/);
+  assert.match(webApp, /except FatalJobError:/);
+  assert.match(webApp, /except FatalJobError as exc:/);
+  assert.match(webApp, /executor\.shutdown\(wait=False, cancel_futures=True\)/);
+  assert.match(webApp, /if is_fatal_api_error\(exc\):\n\s+exc = ValueError\(friendly_api_error\(exc\)\)/);
+});
