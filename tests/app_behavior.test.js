@@ -172,7 +172,8 @@ test("mobile sidebar stays open when switching side pages", () => {
   assert.ok(setPageFunction);
   assert.doesNotMatch(setPageFunction, /classList\.remove\("open"\)/);
   assert.match(appJs, /function closeSidebarOnMobile\(\)/);
-  assert.match(appJs, /els\.libraryLoadSong\.addEventListener\("click",[\s\S]*closeSidebarOnMobile\(\)/);
+  assert.match(appJs, /function renderLibraryList\(\)/);
+  assert.match(appJs, /setPage\("practice"\);\n\s*closeSidebarOnMobile\(\)/);
 });
 
 test("mobile sidebar uses a backdrop so player controls do not receive outside taps", () => {
@@ -222,7 +223,7 @@ test("APK optional sync panel does not expose cloud config loading", () => {
 test("completed workspace jobs can reopen generated lyrics for preview and publishing", () => {
   assert.match(appJs, /function workspaceJobReadyForPublish\(job\)/);
   assert.match(appJs, /async function openWorkspaceJob\(job\)/);
-  assert.match(appJs, /setPage\("generator"\)/);
+  assert.match(appJs, /setPage\("search"\)/);
   assert.match(appJs, /await loadWorkspace\(job\.song_name\)/);
   assert.match(appJs, /await previewGenerated\(\{ refreshWorkspace: true \}\)/);
   assert.match(appJs, /button\.textContent = "打开工作源"/);
@@ -488,4 +489,36 @@ test("workspace ruby generation uses larger configurable chunks and fails fast o
   assert.match(webApp, /except FatalJobError as exc:/);
   assert.match(webApp, /executor\.shutdown\(wait=False, cancel_futures=True\)/);
   assert.match(webApp, /if is_fatal_api_error\(exc\):\n\s+exc = ValueError\(friendly_api_error\(exc\)\)/);
+});
+
+test("one search queries lyric sources and NetEase songs together on the same page", () => {
+  assert.match(appJs, /async function searchAll\(\)/);
+  assert.match(appJs, /window\.searchNeteaseSongs\(songName\)/);
+  assert.match(appJs, /requestJson\("\/api\/lyrics-search"/);
+  assert.match(appJs, /els\.searchLyrics\.addEventListener\("click", \(\) => searchAll\(\)\)/);
+  assert.match(neteaseJs, /window\.searchNeteaseSongs = \(query\) => search\(query\)/);
+  assert.match(neteaseJs, /async function search\(queryOverride\)/);
+});
+
+test("library renders as a right-column list with edit and delete actions per song", () => {
+  assert.match(indexHtml, /id="libraryView"/);
+  assert.match(indexHtml, /id="libraryList"/);
+  assert.match(appJs, /function renderLibraryList\(\)/);
+  assert.match(appJs, /className = "library-item"/);
+  assert.match(appJs, /editButton\.textContent = "改"/);
+  assert.match(appJs, /deleteButton\.textContent = "删"/);
+  assert.match(appJs, /`\/api\/songs\/\$\{encodeURIComponent\(song\.name\)\}\/delete`/);
+  assert.doesNotMatch(indexHtml, /id="librarySongSelect"/);
+  assert.doesNotMatch(appJs, /libraryLoadSong/);
+});
+
+test("local import is condensed into add-song and add-lyrics buttons that reveal the forms", () => {
+  assert.match(indexHtml, /id="addSongButton"/);
+  assert.match(indexHtml, /id="addLyricsButton"/);
+  assert.match(indexHtml, /id="audioImportPanel"/);
+  assert.match(indexHtml, /id="lyricsImportPanel"/);
+  assert.match(appJs, /function setImportPanel\(kind\)/);
+  assert.match(appJs, /addSongButton\?\.addEventListener\("click", \(\) => setImportPanel\("audio"\)\)/);
+  assert.match(appJs, /addLyricsButton\?\.addEventListener\("click", \(\) => setImportPanel\("lyrics"\)\)/);
+  assert.match(appCss, /\.library-add-row/);
 });

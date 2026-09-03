@@ -632,6 +632,104 @@ ruby rt {
   padding: 22px 0;
 }
 
+/* 歌库右栏列表 */
+.library-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 56px clamp(20px, 5vw, 72px) 40px;
+  background: #fff;
+}
+
+.library-list {
+  display: grid;
+  gap: 10px;
+  margin: 0 auto;
+  max-width: 1280px;
+}
+
+.library-empty {
+  color: #667085;
+  font-size: 14px;
+  text-align: center;
+  padding: 40px 12px;
+}
+
+.library-item {
+  background: #fff;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  display: flex;
+  align-items: stretch;
+  min-height: 0;
+}
+
+.library-item-main {
+  appearance: none;
+  -webkit-appearance: none;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-height: 0;
+  padding: 10px 12px;
+  text-align: left;
+  border: 0;
+  border-radius: 8px 0 0 8px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.library-item-main strong {
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.library-item-main .meta-line {
+  margin: 0;
+}
+
+.library-item-actions {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 10px 12px 10px 0;
+}
+
+.library-item-actions button {
+  min-height: 0;
+  min-width: 44px;
+  padding: 6px 12px;
+}
+
+/* 本地导入两个入口按钮 */
+.library-add-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.library-add-row button.active {
+  background: #ff4b55;
+  border-color: #ff4b55;
+  color: #fff;
+}
+
+.library-import-form {
+  border-top: 1px solid #cfd6e2;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .library-item-main:hover {
+    background: #f8fafc;
+  }
+}
+
 .search-panel + .search-panel {
   margin-top: 10px;
 }
@@ -1008,6 +1106,10 @@ dialog {
   }
 
   .search-view {
+    padding: calc(56px + var(--safe-top)) 16px calc(28px + var(--safe-bottom));
+  }
+
+  .library-view {
     padding: calc(56px + var(--safe-top)) 16px calc(28px + var(--safe-bottom));
   }
 

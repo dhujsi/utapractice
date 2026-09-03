@@ -304,8 +304,8 @@
     });
   }
 
-  async function search() {
-    const query = String(els.query.value || "").trim();
+  async function search(queryOverride) {
+    const query = String(typeof queryOverride === "string" ? queryOverride : els.query.value || "").trim();
     if (!query) {
       setResultStatus("先输入歌名或歌手", "error");
       return;
@@ -329,6 +329,9 @@
       els.search.disabled = false;
     }
   }
+
+  // 统一搜索入口：搜索页的一次搜索会同时调用它搜网易云歌曲。
+  window.searchNeteaseSongs = (query) => search(query);
 
   async function downloadSelected() {
     const song = state.results.find((item) => String(item.id) === String(state.selectedId));
@@ -396,10 +399,4 @@
     setBridgeBase(loadBridgeBase());
   }
   refreshLoginStatus();
-})();
-
-(() => {
-  const script = document.createElement("script");
-  script.src = "/web_static/library_workspace.js";
-  document.body.appendChild(script);
 })();

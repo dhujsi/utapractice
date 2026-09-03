@@ -20,11 +20,13 @@ const state = {
 const els = {
   appShell: document.getElementById("appShell"),
   songSelect: document.getElementById("songSelect"),
-  librarySongSelect: document.getElementById("librarySongSelect"),
-  librarySongInfo: document.getElementById("librarySongInfo"),
-  libraryLoadSong: document.getElementById("libraryLoadSong"),
-  libraryEditLyrics: document.getElementById("libraryEditLyrics"),
-  libraryDeleteSong: document.getElementById("libraryDeleteSong"),
+  libraryView: document.getElementById("libraryView"),
+  libraryList: document.getElementById("libraryList"),
+  libraryViewStatus: document.getElementById("libraryViewStatus"),
+  addSongButton: document.getElementById("addSongButton"),
+  addLyricsButton: document.getElementById("addLyricsButton"),
+  audioImportPanel: document.getElementById("audioImportPanel"),
+  lyricsImportPanel: document.getElementById("lyricsImportPanel"),
   songTitle: document.getElementById("songTitle"),
   songAvailability: document.getElementById("songAvailability"),
   songPanel: document.getElementById("songPanel"),
@@ -45,7 +47,6 @@ const els = {
   rangeInput: document.getElementById("rangeInput"),
   learnedInput: document.getElementById("learnedInput"),
   playerView: document.getElementById("playerView"),
-  workspaceView: document.getElementById("workspaceView"),
   searchView: document.getElementById("searchView"),
   lyrics: document.getElementById("lyrics"),
   emptyState: document.getElementById("emptyState"),
@@ -259,10 +260,10 @@ function setPage(page) {
     node.classList.toggle("active", node.dataset.page === page);
   });
   els.sidePages.forEach((panel) => panel.classList.toggle("active", panel.dataset.pagePanel === page));
-  els.playerView.hidden = page === "generator" || page === "search";
-  els.workspaceView.hidden = page !== "generator";
+  els.playerView.hidden = page !== "practice";
   if (els.searchView) els.searchView.hidden = page !== "search";
-  if (page === "generator") {
+  if (els.libraryView) els.libraryView.hidden = page !== "library";
+  if (page === "search") {
     loadJobs().then(scheduleJobPollingIfNeeded).catch(() => {});
   }
 }
@@ -415,8 +416,89 @@ function filteredSongs() {
   });
 }
 
-function selectedLibrarySong() {
-  return state.songs.find((song) => song.name === els.librarySongSelect.value) || null;
+function libraryFlags(song) {
+  const flags = [audioStatusLabel(song), song.has_lyrics ? `${song.lyrics_type?.toUpperCase()} 歌词` : "无歌词"];
+  if (song.learned) flags.push("已学会");
+  return flags.join(" · ");
+}
+
+function renderLibraryList() {
+  if (!els.libraryList) return;
+  els.libraryList.innerHTML = "";
+  if (!state.songs.length) {
+    const empty = document.createElement("p");
+    empty.className = "library-empty";
+    empty.textContent = "歌库为空，点左侧「添加歌曲」或「添加歌词」导入";
+    els.libraryList.append(empty);
+    return;
+  }
+  for (const song of state.songs) {
+    const item = document.createElement("article");
+    item.className = "library-item";
+    item.dataset.songName = song.name;
+
+    const main = document.createElement("button");
+    main.type = "button";
+    main.className = "library-item-main";
+    main.setAttribute("aria-label", `载入 ${song.name}`);
+    const title = document.createElement("strong");
+    title.textContent = song.name;
+    const meta = document.createElement("span");
+    meta.className = "meta-line";
+    meta.textContent = libraryFlags(song);
+    main.append(title, meta);
+    main.addEventListener("click", async () => {
+      await loadSong(song.name).catch((error) => showToast(error.message));
+      setPage("practice");
+      closeSidebarOnMobile();
+    });
+
+    const actions = document.createElement("div");
+    actions.className = "library-item-actions";
+
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.textContent = "改";
+    editButton.title = "编辑歌词";
+    editButton.setAttribute("aria-label", `编辑 ${song.name} 的歌词`);
+    editButton.addEventListener("click", async () => {
+      if (!state.current || state.current.name !== song.name) {
+        await loadSong(song.name).catch((error) => showToast(error.message));
+      }
+      els.editLyrics.click();
+      closeSidebarOnMobile();
+    });
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "danger";
+    deleteButton.textContent = "删";
+    deleteButton.title = "删除这首歌";
+    deleteButton.setAttribute("aria-label", `删除 ${song.name}`);
+    deleteButton.addEventListener("click", async () => {
+      if (!confirm(`确定删除「${song.name}」吗？文件会移动到归档目录。`)) return;
+      try {
+        await requestJson(`/api/songs/${encodeURIComponent(song.name)}/delete`, { method: "POST" });
+        if (state.current?.name === song.name) state.current = null;
+        await loadSongs();
+        showToast("歌曲已归档");
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+
+    actions.append(editButton, deleteButton);
+    item.append(main, actions);
+    els.libraryList.append(item);
+  }
+}
+
+function setImportPanel(kind) {
+  const showAudio = kind === "audio";
+  if (els.audioImportPanel) els.audioImportPanel.hidden = !showAudio;
+  if (els.lyricsImportPanel) els.lyricsImportPanel.hidden = showAudio;
+  els.addSongButton?.classList.toggle("active", showAudio);
+  els.addLyricsButton?.classList.toggle("active", !showAudio);
 }
 
 function setUploadStatus(statusEl, message, kind = "") {
@@ -568,32 +650,15 @@ function updateLyricsTextStatus() {
   setUploadStatus(els.lyricsTextStatus, label);
 }
 
-function renderLibraryInfo() {
-  const song = selectedLibrarySong();
-  if (!song) {
-    els.librarySongInfo.textContent = "请选择歌曲";
-    els.libraryLoadSong.disabled = true;
-    els.libraryEditLyrics.disabled = true;
-    els.libraryDeleteSong.disabled = true;
-    return;
-  }
-  els.librarySongInfo.textContent = `${audioStatusLabel(song)} · ${song.has_lyrics ? `${song.lyrics_type?.toUpperCase()} 歌词` : "无歌词"} · ${song.learned ? "已学会" : "未学会"}`;
-  els.libraryLoadSong.disabled = false;
-  els.libraryEditLyrics.disabled = false;
-  els.libraryDeleteSong.disabled = false;
-}
-
 function renderSongSelect() {
   const songs = filteredSongs();
   els.songSelect.innerHTML = "";
-  els.librarySongSelect.innerHTML = "";
   if (!songs.length) {
     const option = document.createElement("option");
     option.textContent = "暂无歌曲";
     option.value = "";
     els.songSelect.append(option);
-    els.librarySongSelect.append(option.cloneNode(true));
-    renderLibraryInfo();
+    renderLibraryList();
     renderAudioTargetOptions();
     renderLyricsTargetOptions();
     return;
@@ -604,16 +669,14 @@ function renderSongSelect() {
     const flags = [audioPlayable(song) ? "音频" : song.has_audio ? "音频格式不支持" : null, song.has_lyrics ? song.lyrics_type?.toUpperCase() : null].filter(Boolean).join(" + ");
     option.textContent = `${song.name} (${flags || "空条目"})`;
     els.songSelect.append(option);
-    els.librarySongSelect.append(option.cloneNode(true));
   }
 
   if (state.current && songs.some((song) => song.name === state.current.name)) {
     els.songSelect.value = state.current.name;
-    els.librarySongSelect.value = state.current.name;
   } else {
     loadSong(songs[0].name).catch((error) => showToast(error.message));
   }
-  renderLibraryInfo();
+  renderLibraryList();
   renderAudioTargetOptions();
   renderLyricsTargetOptions();
 }
@@ -742,8 +805,6 @@ async function loadSong(name) {
   if (canPlay) syncAudioSource({ preserveTime: false });
   renderLyrics();
   els.songSelect.value = song.name;
-  els.librarySongSelect.value = song.name;
-  renderLibraryInfo();
 }
 
 async function refreshSongsAfterLibraryMutation(affectedName = "") {
@@ -971,7 +1032,7 @@ function workspaceJobReadyForPublish(job) {
 
 async function openWorkspaceJob(job) {
   if (!job?.song_name) return;
-  setPage("generator");
+  setPage("search");
   await loadWorkspace(job.song_name);
   await previewGenerated({ refreshWorkspace: true });
 }
@@ -1317,16 +1378,19 @@ async function selectSearchResult(index) {
   }
 }
 
-async function searchLyrics() {
+async function searchAll() {
   const songName = workspaceName();
   if (!songName) {
     showToast("请先输入歌曲名");
     return;
   }
   els.searchLyrics.disabled = true;
-  const starting = "正在搜索歌词来源...";
+  const starting = "正在同时搜索歌词来源与网易云歌曲...";
   setWorkspaceStatus(starting);
   setSearchLyricsStatus(starting);
+  if (typeof window.searchNeteaseSongs === "function") {
+    window.searchNeteaseSongs(songName).catch(() => {});
+  }
   try {
     const payload = {
       song_name: songName,
@@ -1422,10 +1486,9 @@ async function usePreview() {
     }),
   });
   populateWorkspace(workspace);
-  setWorkspaceStatus("已保存为工作源");
-  setSearchLyricsStatus("已保存为工作源，进入工作页继续");
+  setWorkspaceStatus("已保存为工作源，可在下方继续编辑与生成");
+  setSearchLyricsStatus("已保存为工作源，可继续生成");
   showToast("已保存工作源");
-  setPage("generator");
 }
 
 async function loadWorkspace(name) {
@@ -1525,27 +1588,8 @@ els.filterGroup.addEventListener("click", (event) => {
 });
 
 els.songSelect.addEventListener("change", () => loadSong(els.songSelect.value));
-els.librarySongSelect.addEventListener("change", renderLibraryInfo);
-els.libraryLoadSong.addEventListener("click", async () => {
-  await loadSong(els.librarySongSelect.value);
-  setPage("practice");
-  closeSidebarOnMobile();
-});
-els.libraryEditLyrics.addEventListener("click", async () => {
-  const song = selectedLibrarySong();
-  if (!song) return;
-  if (!state.current || state.current.name !== song.name) await loadSong(song.name);
-  els.editLyrics.click();
-});
-els.libraryDeleteSong.addEventListener("click", async () => {
-  const song = selectedLibrarySong();
-  if (!song) return;
-  if (!confirm(`确定删除「${song.name}」吗？文件会移动到归档目录。`)) return;
-  await requestJson(`/api/songs/${encodeURIComponent(song.name)}/delete`, { method: "POST" });
-  state.current = null;
-  await loadSongs();
-  showToast("歌曲已归档");
-});
+els.addSongButton?.addEventListener("click", () => setImportPanel("audio"));
+els.addLyricsButton?.addEventListener("click", () => setImportPanel("lyrics"));
 
 els.keySlider.addEventListener("input", () => {
   els.keyOutput.value = els.keySlider.value;
@@ -1633,7 +1677,7 @@ els.sideNav.addEventListener("click", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if (["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) return;
-  if (event.code === "Space" && audioPlayable(state.current) && state.page !== "generator") {
+  if (event.code === "Space" && audioPlayable(state.current) && state.page === "practice") {
     event.preventDefault();
     els.playButton.click();
   }
@@ -1714,7 +1758,7 @@ els.testApiSettings.addEventListener("click", async () => {
   }
 });
 
-els.searchLyrics.addEventListener("click", () => searchLyrics());
+els.searchLyrics.addEventListener("click", () => searchAll());
 els.usePreview.addEventListener("click", () => usePreview().catch((error) => showToast(error.message)));
 els.saveWorkspace.addEventListener("click", () => saveWorkspace().catch((error) => showToast(error.message)));
 els.realignWorkspace.addEventListener("click", () => realignWorkspace().catch((error) => showToast(error.message)));
