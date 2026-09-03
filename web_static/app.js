@@ -46,6 +46,7 @@ const els = {
   learnedInput: document.getElementById("learnedInput"),
   playerView: document.getElementById("playerView"),
   workspaceView: document.getElementById("workspaceView"),
+  searchView: document.getElementById("searchView"),
   lyrics: document.getElementById("lyrics"),
   emptyState: document.getElementById("emptyState"),
   controls: document.getElementById("controls"),
@@ -89,11 +90,13 @@ const els = {
   refreshJobs: document.getElementById("refreshJobs"),
   jobList: document.getElementById("jobList"),
   workspaceStatus: document.getElementById("workspaceStatus"),
+  workspaceEditorSong: document.getElementById("workspaceEditorSong"),
   workspaceSongName: document.getElementById("workspaceSongName"),
   workspaceArtist: document.getElementById("workspaceArtist"),
   workspaceAlbum: document.getElementById("workspaceAlbum"),
   workspaceProvider: document.getElementById("workspaceProvider"),
   searchLyrics: document.getElementById("searchLyrics"),
+  searchLyricsStatus: document.getElementById("searchLyricsStatus"),
   usePreview: document.getElementById("usePreview"),
   saveWorkspace: document.getElementById("saveWorkspace"),
   realignWorkspace: document.getElementById("realignWorkspace"),
@@ -256,8 +259,9 @@ function setPage(page) {
     node.classList.toggle("active", node.dataset.page === page);
   });
   els.sidePages.forEach((panel) => panel.classList.toggle("active", panel.dataset.pagePanel === page));
-  els.playerView.hidden = page === "generator";
+  els.playerView.hidden = page === "generator" || page === "search";
   els.workspaceView.hidden = page !== "generator";
+  if (els.searchView) els.searchView.hidden = page !== "search";
   if (page === "generator") {
     loadJobs().then(scheduleJobPollingIfNeeded).catch(() => {});
   }
@@ -1057,6 +1061,23 @@ function renderJobs(jobs) {
       });
       item.append(stopButton);
     }
+    if (job.status === "failed" || job.status === "stopped") {
+      const retryButton = document.createElement("button");
+      retryButton.type = "button";
+      retryButton.textContent = "重试";
+      retryButton.className = "job-retry-button";
+      retryButton.addEventListener("click", async () => {
+        try {
+          await requestJson(`/api/convert-jobs/${encodeURIComponent(job.id)}/retry`, { method: "POST", body: JSON.stringify({}) });
+          await loadJobs();
+          scheduleJobPolling();
+          showToast("已重新加入队列");
+        } catch (error) {
+          showToast(error.message);
+        }
+      });
+      item.append(retryButton);
+    }
     if (workspaceJobReadyForPublish(job)) {
       const actions = document.createElement("div");
       actions.className = "job-actions";
@@ -1142,6 +1163,10 @@ function workspaceName() {
 
 function setWorkspaceStatus(message) {
   els.workspaceStatus.textContent = message;
+}
+
+function setSearchLyricsStatus(message) {
+  if (els.searchLyricsStatus) els.searchLyricsStatus.textContent = message;
 }
 
 function renderSearchResults() {
@@ -1249,6 +1274,9 @@ function populateWorkspace(workspace) {
   state.workspace.data = workspace;
   els.workspaceSongName.value = workspace.song_name || workspaceName();
   els.workspaceArtist.value = workspace.artist || "";
+  if (els.workspaceEditorSong) {
+    els.workspaceEditorSong.textContent = `正在编辑：${workspace.song_name || ""}`;
+  }
   els.workspaceOriginalLrc.value = workspace.original_lrc || "";
   els.workspaceTranslationLrc.value = workspace.translation_lrc || "";
   els.workspaceRomanLrc.value = workspace.roman_lrc || "";
@@ -1270,16 +1298,21 @@ async function selectSearchResult(index) {
   if (!result) return;
   state.workspace.selectedResult = result;
   els.searchResults.querySelectorAll(".search-result").forEach((node) => node.classList.toggle("active", Number(node.dataset.index) === index));
-  setWorkspaceStatus(`正在预览：${result.provider} · ${result.title || ""}`);
+  const message = `正在预览：${result.provider} · ${result.title || ""}`;
+  setWorkspaceStatus(message);
+  setSearchLyricsStatus(message);
   try {
     const preview = await requestJson("/api/lyrics-preview", {
       method: "POST",
       body: JSON.stringify({ result }),
     });
     renderPreview(preview);
-    setWorkspaceStatus(`已预览 ${result.provider} 版本，尚未保存`);
+    const doneMessage = `已预览 ${result.provider} 版本，尚未保存`;
+    setWorkspaceStatus(doneMessage);
+    setSearchLyricsStatus(doneMessage);
   } catch (error) {
     setWorkspaceStatus(`预览失败：${error.message}`);
+    setSearchLyricsStatus(`预览失败：${error.message}`);
     showToast("预览失败");
   }
 }
@@ -1291,7 +1324,9 @@ async function searchLyrics() {
     return;
   }
   els.searchLyrics.disabled = true;
-  setWorkspaceStatus("正在搜索歌词来源...");
+  const starting = "正在搜索歌词来源...";
+  setWorkspaceStatus(starting);
+  setSearchLyricsStatus(starting);
   try {
     const payload = {
       song_name: songName,
@@ -1309,10 +1344,16 @@ async function searchLyrics() {
     state.workspace.preview = null;
     renderSearchResults();
     clearGeneratedPreview();
+    const fold = document.getElementById("lyricsSearchFold");
+    if (fold) fold.open = true;
     const errorCount = Object.keys(result.errors || {}).length;
-    setWorkspaceStatus(errorCount ? `搜索完成，${errorCount} 个来源失败，已显示可用结果` : "搜索完成");
+    const doneMessage = errorCount ? `搜索完成，${errorCount} 个来源失败，已显示可用结果` : "搜索完成";
+    setWorkspaceStatus(doneMessage);
+    setSearchLyricsStatus(doneMessage);
   } catch (error) {
-    setWorkspaceStatus(`搜索失败：${error.message}`);
+    const failedMessage = `搜索失败：${error.message}`;
+    setWorkspaceStatus(failedMessage);
+    setSearchLyricsStatus(failedMessage);
     showToast("搜索失败");
   } finally {
     els.searchLyrics.disabled = false;
@@ -1382,7 +1423,9 @@ async function usePreview() {
   });
   populateWorkspace(workspace);
   setWorkspaceStatus("已保存为工作源");
+  setSearchLyricsStatus("已保存为工作源，进入工作页继续");
   showToast("已保存工作源");
+  setPage("generator");
 }
 
 async function loadWorkspace(name) {

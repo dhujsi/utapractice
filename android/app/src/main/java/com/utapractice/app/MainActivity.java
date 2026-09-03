@@ -71,6 +71,7 @@ public class MainActivity extends Activity {
     private static final String PREFS_NAME = "utapractice_apk";
     private static final String KEY_SERVER_URL = "server_url";
     private static final String KEY_LAST_SYNC = "last_sync";
+    private static final String KEY_NETEASE_BRIDGE_URL = "netease_bridge_url";
     private static final int REQUEST_IMPORT_AUDIO = 4101;
     private static final int REQUEST_IMPORT_LYRICS = 4102;
     private static final int SEARCH_TIMEOUT_MS = 6000;
@@ -240,6 +241,16 @@ public class MainActivity extends Activity {
         Uri uri = request.getUrl();
         String method = request.getMethod() == null ? "GET" : request.getMethod().toUpperCase();
         String pathAndQuery = uri.getEncodedPath() + (uri.getEncodedQuery() == null ? "" : "?" + uri.getEncodedQuery());
+        String path = uri.getPath();
+        if (path != null && path.startsWith("/api/netease/")) {
+            // 网易云桥接 GET 直连兜底：WebView 内直接请求 /api/netease/* 时由 Java 转发
+            try {
+                String neteaseBody = neteaseBridgeFetch("GET", pathAndQuery, null);
+                return bytesResponse("application/json; charset=utf-8", neteaseBody.getBytes(StandardCharsets.UTF_8));
+            } catch (Exception error) {
+                return jsonResponse(502, errorJson(error.getMessage()).toString());
+            }
+        }
         if (!"GET".equals(method)) {
             return jsonResponse(405, "{\"error\":\"APK 本地写入请通过 Android Bridge 提交\"}");
         }
@@ -366,6 +377,10 @@ public class MainActivity extends Activity {
         public String apiRequest(String method, String path, String body) {
             try {
                 String apiPath = apiPath(path);
+                if (apiPath.startsWith("/api/netease/")) {
+                    // 网易云桥接：由 Java 侧转发，绕开 WebView 的 CORS / 明文端口限制
+                    return neteaseBridgeFetch(method, apiPath + queryStringOf(path), body);
+                }
                 if (isLocalPostPath(apiPath) || isLocalDeletePath(apiPath)) {
                     JSONObject result = handleLocalPost(method, apiPath, body);
                     return result.toString();
@@ -384,6 +399,16 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void setServerUrl(String value) {
             prefs.edit().putString(KEY_SERVER_URL, cleanUrl(value)).apply();
+        }
+
+        @JavascriptInterface
+        public String getNeteaseBridgeUrl() {
+            return neteaseBridgeUrl();
+        }
+
+        @JavascriptInterface
+        public void setNeteaseBridgeUrl(String value) {
+            prefs.edit().putString(KEY_NETEASE_BRIDGE_URL, cleanUrl(value)).apply();
         }
 
         @JavascriptInterface
@@ -2044,6 +2069,64 @@ public class MainActivity extends Activity {
     private String cleanUrl(String value) {
         String text = value == null ? "" : value.trim();
         while (text.endsWith("/")) text = text.substring(0, text.length() - 1);
+        return text;
+    }
+
+    private String neteaseBridgeUrl() {
+        String configured = cleanUrl(prefs.getString(KEY_NETEASE_BRIDGE_URL, ""));
+        if (!configured.isEmpty()) return configured;
+        // 默认从同步后端地址推导：同一主机的 8503 端口
+        String server = serverUrl();
+        if (server.isEmpty()) return "";
+        try {
+            Uri uri = Uri.parse(server);
+            String scheme = uri.getScheme() == null || uri.getScheme().isEmpty() ? "http" : uri.getScheme();
+            String host = uri.getHost();
+            if (host == null || host.isEmpty()) return "";
+            return scheme + "://" + host + ":8503";
+        } catch (Exception error) {
+            return "";
+        }
+    }
+
+    private String queryStringOf(String value) {
+        String text = value == null ? "" : value.trim();
+        int queryIndex = text.indexOf('?');
+        return queryIndex >= 0 ? text.substring(queryIndex) : "";
+    }
+
+    private String neteaseBridgeFetch(String method, String pathAndQuery, String body) throws IOException {
+        String base = neteaseBridgeUrl();
+        if (base.isEmpty()) {
+            throw new IOException("请先在连接设置里填写网易云桥接地址（或填写同步后端地址）");
+        }
+        String urlText = base + pathAndQuery;
+        HttpURLConnection connection = (HttpURLConnection) new URL(urlText).openConnection();
+        connection.setConnectTimeout(10000);
+        connection.setReadTimeout(130000);
+        connection.setRequestProperty("User-Agent", "utapractice-android");
+        connection.setRequestMethod(method);
+        if (!"GET".equals(method)) {
+            byte[] bytes = (body == null ? "" : body).getBytes(StandardCharsets.UTF_8);
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json");
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(bytes);
+            }
+        }
+        int status = connection.getResponseCode();
+        InputStream stream = status >= 200 && status < 300 ? connection.getInputStream() : connection.getErrorStream();
+        String text;
+        try (InputStream input = stream == null ? new ByteArrayInputStream(new byte[0]) : stream) {
+            text = new String(readAll(input), StandardCharsets.UTF_8).trim();
+        } finally {
+            connection.disconnect();
+        }
+        if (status < 200 || status >= 300) {
+            // 桥接错误体通常是 {"error": "..."}，原样返回让 JS 侧抛出；否则包装成错误 JSON
+            if (text.startsWith("{")) return text;
+            return errorJson(text.isEmpty() ? "HTTP " + status : text).toString();
+        }
         return text;
     }
 

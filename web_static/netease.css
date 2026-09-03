@@ -87,3 +87,28 @@
   min-height: 1.25em;
   margin: 8px 0;
 }
+
+.netease-noscan {
+  margin: 10px 0;
+  padding: 8px 0 4px;
+  border-top: 1px dashed currentColor;
+  border-bottom: 1px dashed currentColor;
+}
+
+.netease-noscan summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.netease-phone-row {
+  display: grid;
+  grid-template-columns: minmax(0, 3.5rem) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.netease-noscan textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}

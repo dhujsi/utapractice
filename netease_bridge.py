@@ -376,6 +376,101 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 )
 
+            if parsed.path == "/api/netease/cookie":
+                body = self.read_json()
+                cookie = str(body.get("cookie") or "").strip()
+                if not cookie:
+                    return self.send_json(400, {"error": "Cookie 不能为空"})
+                save_cookie(cookie)
+                connected = False
+                nickname = ""
+                try:
+                    status_payload = ncm_request("/login/status")
+                    data = status_payload.get("data") if isinstance(status_payload.get("data"), dict) else {}
+                    profile = data.get("profile") if isinstance(data, dict) else None
+                    account = data.get("account") if isinstance(data, dict) else None
+                    connected = bool(profile or account)
+                    nickname = (profile or {}).get("nickname") if isinstance(profile, dict) else ""
+                except Exception:
+                    pass
+                return self.send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "connected": connected,
+                        "nickname": nickname or "",
+                        "message": "Cookie 已保存" + ("，登录有效" if connected else "，但尚未登录有效账号"),
+                    },
+                )
+
+            if parsed.path == "/api/netease/captcha/sent":
+                body = self.read_json()
+                phone = str(body.get("phone") or "").strip()
+                if not phone:
+                    return self.send_json(400, {"error": "手机号不能为空"})
+                countrycode = str(body.get("countrycode") or body.get("ctcode") or "86").strip()
+                payload = ncm_request("/captcha/sent", {"phone": phone, "ctcode": countrycode})
+                code = payload.get("code")
+                if code != 200:
+                    raise RuntimeError(payload.get("message") or payload.get("msg") or "验证码发送失败")
+                return self.send_json(200, {"ok": True, "message": payload.get("message") or "验证码已发送"})
+
+            if parsed.path == "/api/netease/captcha/verify":
+                body = self.read_json()
+                phone = str(body.get("phone") or "").strip()
+                captcha = str(body.get("captcha") or "").strip()
+                if not phone or not captcha:
+                    return self.send_json(400, {"error": "手机号和验证码不能为空"})
+                countrycode = str(body.get("countrycode") or body.get("ctcode") or "86").strip()
+                payload = ncm_request(
+                    "/captcha/verify",
+                    {"phone": phone, "ctcode": countrycode, "captcha": captcha},
+                )
+                code = payload.get("code")
+                if code != 200:
+                    raise RuntimeError(payload.get("message") or payload.get("msg") or "验证码校验失败")
+                return self.send_json(200, {"ok": True, "message": "验证码校验通过，请登录"})
+
+            if parsed.path == "/api/netease/login/cellphone":
+                body = self.read_json()
+                phone = str(body.get("phone") or "").strip()
+                captcha = str(body.get("captcha") or "").strip()
+                if not phone or not captcha:
+                    return self.send_json(400, {"error": "手机号和验证码不能为空"})
+                countrycode = str(body.get("countrycode") or "86").strip()
+                payload = ncm_request(
+                    "/login/cellphone",
+                    {"phone": phone, "countrycode": countrycode, "captcha": captcha},
+                    method="POST",
+                )
+                code = payload.get("code")
+                if code != 200:
+                    raise RuntimeError(payload.get("message") or payload.get("msg") or "登录失败")
+                cookie = str(payload.pop("_set_cookie", "") or payload.get("cookie") or "").strip()
+                if not cookie:
+                    raise RuntimeError("网易云没有返回登录 Cookie")
+                save_cookie(cookie)
+                connected = False
+                nickname = ""
+                try:
+                    status_payload = ncm_request("/login/status")
+                    data = status_payload.get("data") if isinstance(status_payload.get("data"), dict) else {}
+                    profile = data.get("profile") if isinstance(data, dict) else None
+                    account = data.get("account") if isinstance(data, dict) else None
+                    connected = bool(profile or account)
+                    nickname = (profile or {}).get("nickname") if isinstance(profile, dict) else ""
+                except Exception:
+                    pass
+                return self.send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "connected": connected,
+                        "nickname": nickname or "",
+                        "message": "登录成功",
+                    },
+                )
+
             if parsed.path == "/api/netease/download":
                 body = self.read_json()
                 song_id = str(body.get("id") or "").strip()

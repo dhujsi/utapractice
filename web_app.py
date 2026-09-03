@@ -15,6 +15,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from difflib import SequenceMatcher
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -38,6 +39,11 @@ LYRICS_EXTENSIONS = {".json", ".lrc"}
 SEARCH_HTTP_TIMEOUT_SECONDS = 6
 SEARCH_PROVIDER_TIMEOUT_SECONDS = 6
 SEARCH_AGGREGATE_TIMEOUT_SECONDS = 7
+
+# 网易云桥接服务的同源代理：前端请求 /api/netease/* 时由 Flask 转发到 bridge，
+# 规避跨源 fetch、HTTPS 明文端口和 WebView CORS 限制（方案 C）。
+NETEASE_BRIDGE_BASE = os.environ.get("NETEASE_BRIDGE_BASE", "http://127.0.0.1:8503").rstrip("/")
+NETEASE_PROXY_TIMEOUT = float(os.environ.get("NETEASE_PROXY_TIMEOUT", "130"))
 
 SONG_DIR.mkdir(exist_ok=True)
 ARCHIVE_DIR.mkdir(exist_ok=True)
@@ -65,6 +71,52 @@ def handle_api_preflight():
 @app.after_request
 def apply_api_cors(response):
     return add_api_cors_headers(response)
+
+
+def _netease_bridge_forward(subpath):
+    """把 /api/netease/<subpath> 原样转发给 netease-bridge，返回同源响应。
+
+    前端因此只需请求同源相对路径，不再受 CORS / mixed-content / 8503 端口不可达影响。
+    """
+    target = f"{NETEASE_BRIDGE_BASE}/api/netease/{subpath}"
+    if request.query_string:
+        target = f"{target}?{request.query_string.decode('utf-8')}"
+    body = request.get_data()
+    headers = {
+        "User-Agent": "UtaPracticeProxy/1.0",
+        "Accept": "application/json",
+    }
+    if body:
+        headers["Content-Type"] = request.content_type or "application/json"
+    req = Request(target, data=body or None, headers=headers, method=request.method)
+    try:
+        with urlopen(req, timeout=NETEASE_PROXY_TIMEOUT) as resp:
+            raw = resp.read()
+            status = resp.status
+            ctype = resp.headers.get("Content-Type", "application/json")
+    except HTTPError as exc:
+        raw = exc.read()
+        status = exc.code
+        ctype = (exc.headers or {}).get("Content-Type", "application/json")
+    except (URLError, OSError) as exc:
+        return make_response(
+            json.dumps({"error": f"网易云桥接服务不可用：{exc}"}, ensure_ascii=False),
+            502,
+        )
+    response = make_response(raw)
+    response.status_code = status
+    response.headers["Content-Type"] = ctype or "application/json"
+    return response
+
+
+@app.route("/api/netease", methods=["GET", "POST", "DELETE", "OPTIONS"])
+def netease_bridge_root():
+    return _netease_bridge_forward("")
+
+
+@app.route("/api/netease/<path:subpath>", methods=["GET", "POST", "DELETE", "OPTIONS"])
+def netease_bridge_proxy(subpath):
+    return _netease_bridge_forward(subpath or "")
 jobs_lock = threading.Lock()
 audio_probe_cache = {}
 
@@ -2292,6 +2344,37 @@ def api_stop_convert_job(job_id):
         jobs[job_id] = job
         save_jobs(jobs)
     return jsonify(public_job(job))
+
+
+@app.post("/api/convert-jobs/<job_id>/retry")
+def api_retry_convert_job(job_id):
+    """重试失败的歌词生成任务：保留原 payload，重置状态后重新排队执行。"""
+    with jobs_lock:
+        jobs = load_jobs()
+        job = jobs.get(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        if job.get("status") not in {"failed", "stopped"}:
+            return jsonify({"error": "Only failed or stopped jobs can be retried"}), 400
+        if not job.get("payload"):
+            return jsonify({"error": "Job payload is missing, cannot retry"}), 400
+        job["status"] = "queued"
+        job["progress"] = 0
+        job.pop("error", None)
+        job.pop("result", None)
+        job.pop("finished_at", None)
+        job["stop_requested"] = False
+        retry_message = "任务已重新加入后台队列（重试）"
+        job["message"] = retry_message
+        job["steps"] = [{"time": now_iso(), "message": retry_message}]
+        job["updated_at"] = now_iso()
+        jobs[job_id] = job
+        save_jobs(jobs)
+        retried = dict(job)
+
+    thread = threading.Thread(target=run_convert_job_v2, args=(job_id,), daemon=True)
+    thread.start()
+    return jsonify(public_job(retried)), 202
 
 
 @app.delete("/api/convert-jobs/<job_id>")

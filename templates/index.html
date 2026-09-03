@@ -21,6 +21,7 @@
       <nav class="side-nav" aria-label="页面">
         <button type="button" class="active" data-page="practice">练习</button>
         <button type="button" data-page="library">歌库</button>
+        <button type="button" data-page="search">搜索</button>
         <button type="button" data-page="generator">生成歌词</button>
       </nav>
 
@@ -113,49 +114,6 @@
             <button type="button" id="libraryEditLyrics">编辑歌词</button>
           </div>
           <button type="button" id="libraryDeleteSong" class="danger wide-button">删除这首歌</button>
-        </section>
-
-        <section class="panel netease-panel" id="neteasePanel">
-          <h2>网易云下载</h2>
-          <p class="status-line" id="neteaseStatus">正在检查网易云登录状态...</p>
-          <div class="button-row">
-            <button type="button" id="neteaseLogin">扫码登录</button>
-            <button type="button" id="neteaseLogout" hidden>退出网易云</button>
-          </div>
-          <div class="netease-qr" id="neteaseQrWrap" hidden>
-            <img id="neteaseQrImage" alt="网易云登录二维码">
-            <p class="status-line" id="neteaseQrMessage">等待扫码...</p>
-          </div>
-          <label class="field">
-            <span>搜索歌曲 / 歌手</span>
-            <input id="neteaseQuery" type="search" autocomplete="off" placeholder="输入歌名或歌手">
-          </label>
-          <button type="button" id="neteaseSearch" class="wide-button">搜索网易云</button>
-          <div class="netease-results" id="neteaseResults"></div>
-          <div class="netease-download-options">
-            <label class="field">
-              <span>下载音质</span>
-              <select id="neteaseQuality">
-                <option value="exhigh" selected>极高 / 320 kbps</option>
-                <option value="lossless">无损</option>
-                <option value="hires">Hi-Res</option>
-              </select>
-            </label>
-            <label class="check-row">
-              <input id="neteaseWithLyrics" type="checkbox" checked>
-              <span>同时保存 LRC</span>
-            </label>
-          </div>
-          <p class="netease-result-status" id="neteaseResultStatus">搜索后点一首，再下载到本地歌库。</p>
-          <button type="button" id="neteaseDownload" class="wide-button" disabled>下载选中歌曲</button>
-          <details class="netease-connection">
-            <summary>连接设置</summary>
-            <label class="field">
-              <span>网易云桥接地址</span>
-              <input id="neteaseBridgeUrl" type="url" placeholder="http://your-server.local:8503">
-            </label>
-            <button type="button" id="neteaseSaveBridge" class="wide-button">保存并重连</button>
-          </details>
         </section>
 
         <section class="panel">
@@ -263,17 +221,76 @@
         <div class="workspace-header">
           <div>
             <p class="meta-line">歌词工作页</p>
-            <h2>搜索、对齐、生成、发布</h2>
+            <h2>对齐、生成、发布</h2>
+            <p class="meta-line" id="workspaceEditorSong"></p>
           </div>
-          <p class="status-line" id="workspaceStatus">选择或输入歌曲后搜索歌词</p>
+          <p class="status-line" id="workspaceStatus">在「搜索」页找到歌词版本后，回到这里编辑、生成并发布。</p>
         </div>
 
         <section class="workspace-section workspace-step">
           <div class="step-heading">
             <span>1</span>
             <div>
-              <h2>搜索并预览来源</h2>
-              <p class="meta-line">先找歌词版本，选中结果只预览，不写入歌库。</p>
+              <h2>工作源编辑和生成</h2>
+              <p class="meta-line">这里编辑原文、译文和读音源；AI 只写回工作源，不覆盖正式歌词。</p>
+            </div>
+          </div>
+          <div class="source-editor-grid">
+            <article>
+              <h3>原文 LRC</h3>
+              <textarea id="workspaceOriginalLrc" class="source-textarea" spellcheck="false" placeholder="该版本没有原文 LRC"></textarea>
+            </article>
+            <article>
+              <h3>翻译 LRC</h3>
+              <textarea id="workspaceTranslationLrc" class="source-textarea" spellcheck="false" placeholder="该版本没有译文"></textarea>
+            </article>
+            <article>
+              <h3>罗马音 / 注音 LRC</h3>
+              <textarea id="workspaceRomanLrc" class="source-textarea" spellcheck="false" placeholder="该版本没有罗马音/读音"></textarea>
+            </article>
+          </div>
+          <div class="step-actions">
+            <button type="button" id="saveWorkspace">保存工作源</button>
+            <button type="button" id="realignWorkspace">重新对齐</button>
+            <button type="button" id="generateWorkspaceRuby">AI 生成 ruby JSON</button>
+          </div>
+        </section>
+
+        <section class="workspace-section workspace-step">
+          <div class="step-heading">
+            <span>2</span>
+            <div>
+              <h2>检查并发布</h2>
+              <p class="meta-line">确认生成结果后再发布到正式歌词，播放器只读取正式歌词。</p>
+            </div>
+          </div>
+          <div class="section-heading">
+            <h3>生成结果预览</h3>
+            <span class="meta-line" id="generatedSummary">尚未生成</span>
+          </div>
+          <div class="step-actions">
+            <button type="button" id="previewGenerated">预览生成结果</button>
+            <button type="button" id="publishWorkspace">发布为正式歌词</button>
+          </div>
+          <div class="generated-preview" id="generatedPreviewBox"></div>
+        </section>
+      </section>
+
+      <section class="search-view" id="searchView" hidden>
+        <div class="workspace-header search-workspace-header">
+          <div>
+            <p class="meta-line">统一搜索</p>
+            <h2>搜索歌词 · 搜索歌曲</h2>
+          </div>
+          <p class="status-line" id="searchViewStatus">只露出操作框；搜索结果与确认操作默认折叠。</p>
+        </div>
+
+        <section class="workspace-section search-panel">
+          <div class="step-heading">
+            <span>♪</span>
+            <div>
+              <h2>搜索歌词（聚合来源）</h2>
+              <p class="meta-line">网易云 / QQ / 酷狗 / LRCLIB；结果只预览，不写入歌库。</p>
             </div>
           </div>
           <div class="workspace-grid compact">
@@ -303,70 +320,106 @@
           <div class="step-actions search-actions">
             <button type="button" id="searchLyrics">搜索歌词</button>
           </div>
-          <div class="search-preview-layout">
-            <article class="results-pane">
-              <div class="section-heading">
-                <h3>搜索结果</h3>
-                <span class="meta-line" id="searchSummary">暂无结果</span>
-              </div>
-              <div class="search-results" id="searchResults"></div>
-            </article>
-            <article class="preview-pane">
-              <div class="section-heading">
-                <h3>来源预览</h3>
-                <button type="button" id="usePreview">使用这个版本</button>
-              </div>
-              <div class="preview-box" id="mergedPreview"></div>
-            </article>
-          </div>
+          <p class="status-line" id="searchLyricsStatus">输入歌曲名后搜索。</p>
+          <details class="search-fold" id="lyricsSearchFold">
+            <summary>搜索结果与确认（使用这个版本）</summary>
+            <div class="search-preview-layout">
+              <article class="results-pane">
+                <div class="section-heading">
+                  <h3>搜索结果</h3>
+                  <span class="meta-line" id="searchSummary">暂无结果</span>
+                </div>
+                <div class="search-results" id="searchResults"></div>
+              </article>
+              <article class="preview-pane">
+                <div class="section-heading">
+                  <h3>来源预览</h3>
+                  <button type="button" id="usePreview">使用这个版本</button>
+                </div>
+                <div class="preview-box" id="mergedPreview"></div>
+              </article>
+            </div>
+          </details>
         </section>
 
-        <section class="workspace-section workspace-step">
+        <section class="workspace-section netease-panel search-panel" id="neteasePanel">
           <div class="step-heading">
-            <span>2</span>
+            <span>♫</span>
             <div>
-              <h2>工作源编辑和生成</h2>
-              <p class="meta-line">这里编辑原文、译文和读音源；AI 只写回工作源，不覆盖正式歌词。</p>
+              <h2>搜索歌曲（网易云）</h2>
+              <p class="meta-line">搜索并下载到本地歌库；登录、结果与下载确认默认折叠。</p>
             </div>
           </div>
-          <div class="source-editor-grid">
-            <article>
-              <h3>原文 LRC</h3>
-              <textarea id="workspaceOriginalLrc" class="source-textarea" spellcheck="false" placeholder="该版本没有原文 LRC"></textarea>
-            </article>
-            <article>
-              <h3>翻译 LRC</h3>
-              <textarea id="workspaceTranslationLrc" class="source-textarea" spellcheck="false" placeholder="该版本没有译文"></textarea>
-            </article>
-            <article>
-              <h3>罗马音 / 注音 LRC</h3>
-              <textarea id="workspaceRomanLrc" class="source-textarea" spellcheck="false" placeholder="该版本没有罗马音/读音"></textarea>
-            </article>
-          </div>
-          <div class="step-actions">
-            <button type="button" id="saveWorkspace">保存工作源</button>
-            <button type="button" id="realignWorkspace">重新对齐</button>
-            <button type="button" id="generateWorkspaceRuby">AI 生成 ruby JSON</button>
-          </div>
-        </section>
-
-        <section class="workspace-section workspace-step">
-          <div class="step-heading">
-            <span>3</span>
-            <div>
-              <h2>检查并发布</h2>
-              <p class="meta-line">确认生成结果后再发布到正式歌词，播放器只读取正式歌词。</p>
+          <p class="status-line" id="neteaseStatus">正在检查网易云登录状态...</p>
+          <label class="field">
+            <span>搜索歌曲 / 歌手</span>
+            <input id="neteaseQuery" type="search" autocomplete="off" placeholder="输入歌名或歌手">
+          </label>
+          <button type="button" id="neteaseSearch" class="wide-button">搜索网易云</button>
+          <p class="netease-result-status" id="neteaseResultStatus">搜索后展开下方确认区，点选歌曲并下载到本地歌库。</p>
+          <details class="search-fold" id="neteaseConfirmFold">
+            <summary>登录 / 结果 / 下载（确认用）</summary>
+            <div class="button-row">
+              <button type="button" id="neteaseLogin">扫码登录</button>
+              <button type="button" id="neteaseLogout" hidden>退出网易云</button>
             </div>
-          </div>
-          <div class="section-heading">
-            <h3>生成结果预览</h3>
-            <span class="meta-line" id="generatedSummary">尚未生成</span>
-          </div>
-          <div class="step-actions">
-            <button type="button" id="previewGenerated">预览生成结果</button>
-            <button type="button" id="publishWorkspace">发布为正式歌词</button>
-          </div>
-          <div class="generated-preview" id="generatedPreviewBox"></div>
+            <div class="netease-qr" id="neteaseQrWrap" hidden>
+              <img id="neteaseQrImage" alt="网易云登录二维码">
+              <p class="status-line" id="neteaseQrMessage">等待扫码...</p>
+            </div>
+            <details class="netease-noscan" id="neteaseNoScanWrap">
+              <summary>免扫码登录（手机验证码 / 粘贴 Cookie）</summary>
+              <p class="status-line" id="neteaseNoScanStatus"></p>
+              <label class="field">
+                <span>手机号（验证码登录）</span>
+                <div class="netease-phone-row">
+                  <input id="neteaseCountryCode" type="tel" value="86" inputmode="numeric" aria-label="国家区号">
+                  <input id="neteasePhone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="手机号">
+                </div>
+              </label>
+              <label class="field">
+                <span>短信验证码</span>
+                <div class="netease-phone-row">
+                  <input id="neteaseCaptcha" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位验证码">
+                  <button type="button" id="neteaseSendCaptcha" class="wide-button">发送验证码</button>
+                </div>
+              </label>
+              <div class="button-row">
+                <button type="button" id="neteaseCaptchaLogin" class="wide-button">验证码登录</button>
+              </div>
+              <label class="field">
+                <span>粘贴 Cookie 登录（官方网页登录后复制）</span>
+                <textarea id="neteaseCookieInput" rows="3" placeholder="MUSIC_U=xxx; __csrf=xxx; ..."></textarea>
+              </label>
+              <div class="button-row">
+                <button type="button" id="neteaseCookieLogin" class="wide-button">保存 Cookie 登录</button>
+              </div>
+            </details>
+            <div class="netease-results" id="neteaseResults"></div>
+            <div class="netease-download-options">
+              <label class="field">
+                <span>下载音质</span>
+                <select id="neteaseQuality">
+                  <option value="exhigh" selected>极高 / 320 kbps</option>
+                  <option value="lossless">无损</option>
+                  <option value="hires">Hi-Res</option>
+                </select>
+              </label>
+              <label class="check-row">
+                <input id="neteaseWithLyrics" type="checkbox" checked>
+                <span>同时保存 LRC</span>
+              </label>
+            </div>
+            <button type="button" id="neteaseDownload" class="wide-button" disabled>下载选中歌曲</button>
+            <details class="netease-connection">
+              <summary>连接设置</summary>
+              <label class="field">
+                <span>网易云桥接地址</span>
+                <input id="neteaseBridgeUrl" type="url" placeholder="http://your-server.local:8503">
+              </label>
+              <button type="button" id="neteaseSaveBridge" class="wide-button">保存并重连</button>
+            </details>
+          </details>
         </section>
       </section>
     </main>

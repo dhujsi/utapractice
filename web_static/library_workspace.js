@@ -15,7 +15,8 @@
 
   const directPanels = Array.from(librarySidePage.querySelectorAll(':scope > .panel'));
   const managementPanel = directPanels.find((panel) => panel.querySelector('#librarySongSelect')) || directPanels[0];
-  const neteasePanel = document.getElementById('neteasePanel');
+  // 网易云面板已并入「搜索」页，这里只认歌库页内的面板，避免把搜索页的面板抢过来。
+  const neteasePanel = librarySidePage.querySelector('#neteasePanel');
   const importPanels = directPanels.filter((panel) => panel !== managementPanel && panel !== neteasePanel);
 
   const catalogPanel = document.createElement('section');
@@ -76,9 +77,9 @@
     <div class="workspace-header library-workspace-header">
       <div>
         <p class="meta-line">歌库工具</p>
-        <h2>网易云下载与本地导入</h2>
+        <h2>本地导入与管理</h2>
       </div>
-      <p class="status-line" id="libraryWorkspaceStatus">下载完成后会直接进入左侧歌库。</p>
+      <p class="status-line" id="libraryWorkspaceStatus">添加音频与歌词，管理歌库条目。</p>
     </div>
     <div class="library-detail-column" id="libraryDetailColumn"></div>
   `;

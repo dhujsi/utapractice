@@ -9,6 +9,9 @@ const appJs = readFileSync("web_static/app.js", "utf8");
 const appCss = readFileSync("web_static/app.css", "utf8");
 const indexHtml = readFileSync("templates/index.html", "utf8");
 const webApp = readFileSync("web_app.py", "utf8");
+const neteaseJs = readFileSync("web_static/netease.js", "utf8");
+const neteaseBridge = readFileSync("netease_bridge.py", "utf8");
+const dockerCompose = readFileSync("docker-compose.yml", "utf8");
 
 test("APK local audio responses implement HTTP Range semantics", () => {
   assert.match(androidMain, /getRequestHeaders\(\)\.get\("Range"\)/);
@@ -400,4 +403,74 @@ test("APK lyric search mirrors all web providers without the optional sync backe
   assert.match(androidMain, /"qq"\.equals\(provider\)/);
   assert.match(androidMain, /"kugou"\.equals\(provider\)/);
   assert.doesNotMatch(androidMain, /暂只支持 LRCLIB/);
+});
+
+test("netease bridge exposes cookie and cellphone-captcha login routes", () => {
+  assert.match(neteaseBridge, /parsed\.path == "\/api\/netease\/cookie"/);
+  assert.match(neteaseBridge, /parsed\.path == "\/api\/netease\/captcha\/sent"/);
+  assert.match(neteaseBridge, /parsed\.path == "\/api\/netease\/captcha\/verify"/);
+  assert.match(neteaseBridge, /parsed\.path == "\/api\/netease\/login\/cellphone"/);
+  assert.match(neteaseBridge, /ncm_request\("\/captcha\/sent", \{"phone": phone, "ctcode": countrycode\}\)/);
+  assert.match(neteaseBridge, /ncm_request\(\s*"\/captcha\/verify"/);
+  assert.match(neteaseBridge, /ncm_request\(\s*"\/login\/cellphone"/);
+  assert.match(neteaseBridge, /save_cookie\(cookie\)/);
+  assert.match(neteaseBridge, /payload\.get\("cookie"\) or ""\)\.strip\(\)/);
+});
+
+test("web app proxies /api/netease/* to the netease bridge same-origin", () => {
+  assert.match(webApp, /NETEASE_BRIDGE_BASE = os\.environ\.get\("NETEASE_BRIDGE_BASE", "http:\/\/127\.0\.0\.1:8503"\)/);
+  assert.match(webApp, /def _netease_bridge_forward\(subpath\):/);
+  assert.match(webApp, /f"\{NETEASE_BRIDGE_BASE\}\/api\/netease\/\{subpath\}"/);
+  assert.match(webApp, /@app\.route\("\/api\/netease\/<path:subpath>"[\s\S]*?\ndef netease_bridge_proxy\(subpath\):/);
+  assert.match(webApp, /except HTTPError as exc:/);
+  assert.match(dockerCompose, /NETEASE_BRIDGE_BASE: http:\/\/netease-bridge:8503/);
+  assert.match(dockerCompose, /- netease-bridge/);
+});
+
+test("netease frontend defaults to same-origin proxy and uses the Android bridge in the APK", () => {
+  assert.match(neteaseJs, /const isAndroid = Boolean\(window\.UtaPracticeAndroid\)/);
+  assert.doesNotMatch(neteaseJs, /panel\.hidden = true/);
+  assert.match(neteaseJs, /window\.UtaPracticeAndroid\.apiRequest\(method, path, body\)/);
+  assert.match(neteaseJs, /function loadBridgeBase\(\)/);
+  assert.match(neteaseJs, /function sendCaptcha\(\)/);
+  assert.match(neteaseJs, /"\/api\/netease\/captcha\/sent"/);
+  assert.match(neteaseJs, /"\/api\/netease\/login\/cellphone"/);
+  assert.match(neteaseJs, /"\/api\/netease\/cookie"/);
+  assert.match(neteaseJs, /function saveCookieLogin\(\)/);
+  assert.match(neteaseJs, /els\.sendCaptcha\.addEventListener\("click", sendCaptcha\)/);
+});
+
+test("index page exposes the no-scan login UI", () => {
+  assert.match(indexHtml, /id="neteaseNoScanWrap"/);
+  assert.match(indexHtml, /id="neteaseCountryCode"/);
+  assert.match(indexHtml, /id="neteasePhone"/);
+  assert.match(indexHtml, /id="neteaseCaptcha"/);
+  assert.match(indexHtml, /id="neteaseSendCaptcha"/);
+  assert.match(indexHtml, /id="neteaseCaptchaLogin"/);
+  assert.match(indexHtml, /id="neteaseCookieInput"/);
+  assert.match(indexHtml, /id="neteaseCookieLogin"/);
+});
+
+test("APK proxies netease bridge calls through Java and derives a default bridge URL", () => {
+  assert.match(androidMain, /KEY_NETEASE_BRIDGE_URL = "netease_bridge_url"/);
+  assert.match(androidMain, /private String neteaseBridgeUrl\(\)/);
+  assert.match(androidMain, /private String neteaseBridgeFetch\(String method, String pathAndQuery, String body\)/);
+  assert.match(androidMain, /apiPath\.startsWith\("\/api\/netease\/"\)/);
+  assert.match(androidMain, /public String getNeteaseBridgeUrl\(\)/);
+  assert.match(androidMain, /public void setNeteaseBridgeUrl\(String value\)/);
+  assert.match(androidMain, /":8503"/);
+});
+
+test("failed or stopped lyric generation jobs expose a retry action that re-queues them", () => {
+  assert.match(webApp, /@app\.post\("\/api\/convert-jobs\/<job_id>\/retry"\)/);
+  assert.match(webApp, /def api_retry_convert_job\(job_id\):/);
+  assert.match(webApp, /job\.get\("status"\) not in \{"failed", "stopped"\}/);
+  assert.match(webApp, /Only failed or stopped jobs can be retried/);
+  assert.match(webApp, /job\.get\("payload"\)/);
+  assert.match(webApp, /job\["status"\] = "queued"/);
+  assert.match(webApp, /threading\.Thread\(target=run_convert_job_v2, args=\(job_id,\)/);
+  assert.match(appJs, /job\.status === "failed" \|\| job\.status === "stopped"/);
+  assert.match(appJs, /`\/api\/convert-jobs\/\$\{encodeURIComponent\(job\.id\)\}\/retry`/);
+  assert.match(appJs, /textContent = "重试"/);
+  assert.match(appCss, /\.job-retry-button/);
 });

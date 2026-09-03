@@ -1,10 +1,8 @@
 (() => {
   const panel = document.getElementById("neteasePanel");
   if (!panel) return;
-  if (window.UtaPracticeAndroid) {
-    panel.hidden = true;
-    return;
-  }
+  const isAndroid = Boolean(window.UtaPracticeAndroid);
+  // 不再隐藏面板：APK 端请求改走 AndroidBridge，经 Java 转发到网易云桥接，绕开 CORS/明文限制。
 
   document.getElementById("neteaseWithLyrics")?.closest(".check-row")?.remove();
 
@@ -17,6 +15,14 @@
     qrWrap: document.getElementById("neteaseQrWrap"),
     qrImage: document.getElementById("neteaseQrImage"),
     qrMessage: document.getElementById("neteaseQrMessage"),
+    noScanStatus: document.getElementById("neteaseNoScanStatus"),
+    countryCode: document.getElementById("neteaseCountryCode"),
+    phone: document.getElementById("neteasePhone"),
+    captcha: document.getElementById("neteaseCaptcha"),
+    sendCaptcha: document.getElementById("neteaseSendCaptcha"),
+    captchaLogin: document.getElementById("neteaseCaptchaLogin"),
+    cookieInput: document.getElementById("neteaseCookieInput"),
+    cookieLogin: document.getElementById("neteaseCookieLogin"),
     query: document.getElementById("neteaseQuery"),
     search: document.getElementById("neteaseSearch"),
     quality: document.getElementById("neteaseQuality"),
@@ -33,8 +39,20 @@
   };
 
   function defaultBridgeBase() {
-    const host = window.location.hostname || "127.0.0.1";
-    return `http://${host}:8503`;
+    // 空值 = 走同源代理 /api/netease/*（方案 C），规避 CORS / 明文端口 / 8503 不可达。
+    return "";
+  }
+
+  function loadBridgeBase() {
+    const saved = localStorage.getItem(storageKey);
+    if (saved) {
+      const host = window.location.hostname || "127.0.0.1";
+      if (saved === `http://${host}:8503` || saved === "http://127.0.0.1:8503") {
+        // 旧版自动生成的默认值，平滑迁移到同源代理
+        return "";
+      }
+    }
+    return saved || "";
   }
 
   function bridgeBase() {
@@ -45,6 +63,7 @@
     const normalized = String(value || "").trim().replace(/\/+$/, "");
     els.bridgeUrl.value = normalized;
     localStorage.setItem(storageKey, normalized);
+    if (isAndroid) window.UtaPracticeAndroid.setNeteaseBridgeUrl(normalized);
   }
 
   function setStatus(message, kind = "") {
@@ -57,6 +76,77 @@
     els.resultStatus.dataset.kind = kind;
   }
 
+  function setNoScanStatus(message, kind = "") {
+    els.noScanStatus.textContent = message;
+    els.noScanStatus.dataset.kind = kind;
+  }
+
+  async function sendCaptcha() {
+    const phone = String(els.phone.value || "").trim();
+    if (!/^[0-9+]{5,20}$/.test(phone)) {
+      setNoScanStatus("请先输入正确的手机号", "error");
+      return;
+    }
+    els.sendCaptcha.disabled = true;
+    try {
+      setNoScanStatus("正在发送验证码...");
+      const payload = await bridgeRequest("/api/netease/captcha/sent", {
+        method: "POST",
+        body: JSON.stringify({ phone, countrycode: String(els.countryCode.value || "86").trim() }),
+      });
+      setNoScanStatus(payload.message || "验证码已发送", "success");
+    } catch (error) {
+      setNoScanStatus(error.message, "error");
+    } finally {
+      els.sendCaptcha.disabled = false;
+    }
+  }
+
+  async function loginWithCaptcha() {
+    const phone = String(els.phone.value || "").trim();
+    const captcha = String(els.captcha.value || "").trim();
+    if (!phone || !captcha) {
+      setNoScanStatus("请填写手机号和验证码", "error");
+      return;
+    }
+    els.captchaLogin.disabled = true;
+    try {
+      setNoScanStatus("正在登录...");
+      const payload = await bridgeRequest("/api/netease/login/cellphone", {
+        method: "POST",
+        body: JSON.stringify({ phone, captcha, countrycode: String(els.countryCode.value || "86").trim() }),
+      });
+      setNoScanStatus(payload.message || "登录成功", "success");
+      await refreshLoginStatus();
+    } catch (error) {
+      setNoScanStatus(error.message, "error");
+    } finally {
+      els.captchaLogin.disabled = false;
+    }
+  }
+
+  async function saveCookieLogin() {
+    const cookie = String(els.cookieInput.value || "").trim();
+    if (!cookie) {
+      setNoScanStatus("请先粘贴网易云 Cookie", "error");
+      return;
+    }
+    els.cookieLogin.disabled = true;
+    try {
+      setNoScanStatus("正在保存并验证 Cookie...");
+      const payload = await bridgeRequest("/api/netease/cookie", {
+        method: "POST",
+        body: JSON.stringify({ cookie }),
+      });
+      setNoScanStatus(payload.message || "Cookie 已保存", "success");
+      await refreshLoginStatus();
+    } catch (error) {
+      setNoScanStatus(error.message, "error");
+    } finally {
+      els.cookieLogin.disabled = false;
+    }
+  }
+
   function formatDuration(ms) {
     const seconds = Math.max(0, Math.round(Number(ms || 0) / 1000));
     const minutes = Math.floor(seconds / 60);
@@ -64,11 +154,32 @@
   }
 
   async function bridgeRequest(path, options = {}) {
+    const method = String(options.method || "GET").toUpperCase();
+    const body = options.body || "";
+    if (isAndroid) {
+      // APK 端：经 AndroidBridge 由 Java 转发到网易云桥接（方案 C 移动端）
+      const raw = window.UtaPracticeAndroid.apiRequest(method, path, body);
+      const payload = JSON.parse(raw || "{}");
+      if (payload && payload.error && !payload.ok) throw new Error(payload.error);
+      return payload;
+    }
     const base = bridgeBase();
-    if (!base) throw new Error("请先填写网易云桥接地址");
-    const response = await fetch(`${base}${path}`, {
-      headers: options.body ? { "Content-Type": "application/json", ...(options.headers || {}) } : options.headers || {},
-      ...options,
+    if (base) {
+      // 用户显式填写的自定义桥接地址
+      const response = await fetch(`${base}${path}`, {
+        headers: body ? { "Content-Type": "application/json", ...(options.headers || {}) } : options.headers || {},
+        method,
+        body: body || undefined,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
+      return payload;
+    }
+    // 同源代理（方案 C）：页面由 Flask 提供，/api/netease/* 被 Flask 转发到 bridge
+    const response = await fetch(path, {
+      headers: body ? { "Content-Type": "application/json" } : {},
+      method,
+      body: body || undefined,
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
@@ -207,6 +318,8 @@
       const payload = await bridgeRequest(`/api/netease/search?q=${encodeURIComponent(query)}&limit=20`);
       state.results = Array.isArray(payload.songs) ? payload.songs : [];
       renderResults();
+      const confirmFold = document.getElementById("neteaseConfirmFold");
+      if (confirmFold) confirmFold.open = true;
       setResultStatus(state.results.length ? `找到 ${state.results.length} 首，点一首再下载` : "没有找到歌曲");
     } catch (error) {
       state.results = [];
@@ -267,8 +380,21 @@
     }
   });
   els.download.addEventListener("click", downloadSelected);
+  els.sendCaptcha.addEventListener("click", sendCaptcha);
+  els.captchaLogin.addEventListener("click", loginWithCaptcha);
+  els.cookieLogin.addEventListener("click", saveCookieLogin);
+  els.captcha.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      loginWithCaptcha();
+    }
+  });
 
-  setBridgeBase(localStorage.getItem(storageKey) || defaultBridgeBase());
+  if (isAndroid) {
+    setBridgeBase(window.UtaPracticeAndroid.getNeteaseBridgeUrl());
+  } else {
+    setBridgeBase(loadBridgeBase());
+  }
   refreshLoginStatus();
 })();
 
