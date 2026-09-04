@@ -522,3 +522,35 @@ test("local import is condensed into add-song and add-lyrics buttons that reveal
   assert.match(appJs, /addLyricsButton\?\.addEventListener\("click", \(\) => setImportPanel\("lyrics"\)\)/);
   assert.match(appCss, /\.library-add-row/);
 });
+
+test("job list lives in the left sidebar under the search page panel", () => {
+  assert.match(indexHtml, /data-page-panel="search"[\s\S]*id="jobList"/);
+  assert.match(indexHtml, /id="refreshJobs"/);
+  assert.doesNotMatch(indexHtml, /id="lyricsSearchFold"/);
+});
+
+test("lyric source defaults to NetEase and search results stay visible", () => {
+  assert.match(indexHtml, /<option value="netease" selected>网易云<\/option>/);
+  assert.match(indexHtml, /id="searchResults"/);
+  assert.match(indexHtml, /search-results-grid/);
+  assert.doesNotMatch(indexHtml, /id="mergedPreview"/);
+  assert.doesNotMatch(indexHtml, /id="usePreview"/);
+  assert.doesNotMatch(appJs, /els\.usePreview/);
+});
+
+test("searches auto-select the first lyric and NetEase result", () => {
+  assert.match(appJs, /await selectSearchResult\(0\)/);
+  assert.match(neteaseJs, /selectNeteaseResult\(0\)/);
+  assert.match(neteaseJs, /function selectNeteaseResult\(index\)/);
+});
+
+test("NetEase download offers optional AI ruby generation that seeds a workspace", () => {
+  assert.match(indexHtml, /id="neteaseDownloadWithAi"/);
+  assert.match(indexHtml, /下载后 AI 生成 ruby JSON/);
+  assert.match(neteaseJs, /with_lyrics: withAi/);
+  assert.match(neteaseJs, /\/api\/lyrics-workspace\/\$\{encodeURIComponent\(payload\.song_name\)\}\/from-song/);
+  assert.match(neteaseJs, /"generate_ruby_from_rows"/);
+  assert.match(webApp, /@app\.post\("\/api\/lyrics-workspace\/<path:name>\/from-song"\)/);
+  assert.match(webApp, /def api_seed_workspace_from_song\(name\):/);
+  assert.match(webApp, /这首歌还没有歌词，无法生成 ruby JSON/);
+});

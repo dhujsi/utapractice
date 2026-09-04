@@ -2158,6 +2158,50 @@ def api_use_lyrics_preview(name):
     return jsonify(workspace)
 
 
+@app.post("/api/lyrics-workspace/<path:name>/from-song")
+def api_seed_workspace_from_song(name):
+    """把歌库中已有歌曲的歌词作为工作源，供「下载后 AI 生成 ruby JSON」使用。"""
+    song_name = sanitize_filename(str(name).strip())
+    song = get_song_or_404(song_name)
+    if not song or not song.get("lyrics_path"):
+        return jsonify({"error": "这首歌还没有歌词，无法生成 ruby JSON"}), 400
+
+    if song["lyrics_path"].suffix.lower() == ".lrc":
+        original_lrc = song["lyrics_path"].read_text(encoding="utf-8", errors="replace")
+    else:
+        lyrics = read_lyrics(song["lyrics_path"])
+        if not isinstance(lyrics, list):
+            return jsonify({"error": "歌词格式无法解析为时间轴"}), 400
+        lines = []
+        for line in lyrics:
+            if not isinstance(line, dict):
+                continue
+            time = round(float(line.get("time") or 0), 3)
+            minutes = int(time // 60)
+            seconds = time - minutes * 60
+            text = re.sub(r"<rt>.*?</rt>|<rp>.*?</rp>", "", str(line.get("original_html") or ""), flags=re.S)
+            text = re.sub(r"<[^>]+>", "", text).strip()
+            if not text:
+                continue
+            lines.append(f"[{minutes:02d}:{seconds:05.2f}]{text}")
+        original_lrc = "\n".join(lines)
+
+    workspace = {
+        "song_name": song_name,
+        "artist": "",
+        "source": {"provider": "netease", "song_id": "", "album": "", "duration": None},
+        "original_lrc": original_lrc,
+        "translation_lrc": "",
+        "roman_lrc": "",
+        "line_rows": align_lrc_sources(original_lrc, "", ""),
+        "generated_lyrics": [],
+        "status": "draft",
+        "updated_at": now_iso(),
+    }
+    write_json_path(workspace_path(song_name), workspace)
+    return jsonify(workspace)
+
+
 @app.post("/api/lyrics-align/<path:name>")
 def api_realign_lyrics_workspace(name):
     workspace = read_json_path(workspace_path(name))

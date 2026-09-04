@@ -26,6 +26,7 @@
     query: document.getElementById("neteaseQuery"),
     search: document.getElementById("neteaseSearch"),
     quality: document.getElementById("neteaseQuality"),
+    downloadWithAi: document.getElementById("neteaseDownloadWithAi"),
     results: document.getElementById("neteaseResults"),
     resultStatus: document.getElementById("neteaseResultStatus"),
     download: document.getElementById("neteaseDownload"),
@@ -277,11 +278,12 @@
       return;
     }
 
-    state.results.forEach((song) => {
+    state.results.forEach((song, index) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "netease-result";
       button.dataset.songId = String(song.id);
+      button.dataset.index = String(index);
       button.innerHTML = `
         <span class="netease-result-main">
           <strong></strong>
@@ -293,15 +295,22 @@
       const meta = [song.artist, song.album].filter(Boolean).join(" · ");
       button.querySelector("small").textContent = meta || "未知歌手";
       button.addEventListener("click", () => {
-        state.selectedId = String(song.id);
-        els.results.querySelectorAll(".netease-result").forEach((node) => {
-          node.classList.toggle("selected", node === button);
-        });
-        els.download.disabled = false;
-        setResultStatus(`已选：${song.name}${song.artist ? ` · ${song.artist}` : ""}`);
+        const index = Number(button.dataset.index);
+        selectNeteaseResult(index);
       });
       els.results.appendChild(button);
     });
+  }
+
+  function selectNeteaseResult(index) {
+    const song = state.results[index];
+    if (!song) return;
+    state.selectedId = String(song.id);
+    els.results.querySelectorAll(".netease-result").forEach((node, nodeIndex) => {
+      node.classList.toggle("selected", nodeIndex === index);
+    });
+    els.download.disabled = false;
+    setResultStatus(`已选：${song.name}${song.artist ? ` · ${song.artist}` : ""}`);
   }
 
   async function search(queryOverride) {
@@ -318,9 +327,12 @@
       const payload = await bridgeRequest(`/api/netease/search?q=${encodeURIComponent(query)}&limit=20`);
       state.results = Array.isArray(payload.songs) ? payload.songs : [];
       renderResults();
-      const confirmFold = document.getElementById("neteaseConfirmFold");
-      if (confirmFold) confirmFold.open = true;
-      setResultStatus(state.results.length ? `找到 ${state.results.length} 首，点一首再下载` : "没有找到歌曲");
+      if (state.results.length) {
+        selectNeteaseResult(0);
+        setResultStatus(`找到 ${state.results.length} 首，已默认选第一首，可直接下载`);
+      } else {
+        setResultStatus("没有找到歌曲");
+      }
     } catch (error) {
       state.results = [];
       renderResults();
@@ -340,6 +352,7 @@
       return;
     }
 
+    const withAi = Boolean(els.downloadWithAi?.checked);
     els.download.disabled = true;
     els.search.disabled = true;
     try {
@@ -351,7 +364,7 @@
           name: song.name,
           artist: song.artist,
           level: els.quality.value,
-          with_lyrics: false,
+          with_lyrics: withAi,
         }),
       });
       setResultStatus(`已下载：${payload.filename}`, "success");
@@ -360,6 +373,29 @@
         await refreshSongsAfterLibraryMutation(payload.song_name).catch(() => {});
       } else if (typeof loadSongs === "function") {
         await loadSongs().catch(() => {});
+      }
+
+      if (withAi) {
+        if (!payload.lyrics_saved && !payload.lyrics_existing) {
+          setResultStatus("已下载，但没有拿到歌词，未提交 AI 生成", "error");
+          return;
+        }
+        try {
+          await requestJson(`/api/lyrics-workspace/${encodeURIComponent(payload.song_name)}/from-song`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
+          const job = await requestJson("/api/convert-jobs", {
+            method: "POST",
+            body: JSON.stringify({ type: "generate_ruby_from_rows", song_name: payload.song_name, concurrency: 4 }),
+          });
+          if (typeof loadJobs === "function") await loadJobs();
+          if (typeof scheduleJobPolling === "function") scheduleJobPolling();
+          setResultStatus(`已下载并提交 AI 生成：${job.song_name}`, "success");
+          showToast("已提交 AI 生成任务");
+        } catch (error) {
+          setResultStatus(`下载完成，但 AI 生成提交失败：${error.message}`, "error");
+        }
       }
     } catch (error) {
       setResultStatus(error.message, "error");

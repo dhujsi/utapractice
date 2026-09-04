@@ -770,9 +770,15 @@ ruby rt {
 }
 
 .search-view .netease-download-options {
-  grid-template-columns: minmax(180px, 280px) auto;
+  grid-template-columns: minmax(180px, 280px) auto auto;
   align-items: end;
   gap: 16px;
+  margin-top: 16px;
+}
+
+.search-view .netease-download-options .check-row {
+  margin: 0 0 8px;
+  white-space: nowrap;
 }
 
 .search-view .netease-download-options .check-row {
@@ -843,6 +849,22 @@ ruby rt {
   display: grid;
   grid-template-columns: minmax(280px, 0.95fr) minmax(360px, 1.05fr);
   gap: 18px;
+}
+
+/* 搜索结果：始终可见的两栏 */
+.search-results-grid {
+  align-items: start;
+  display: grid;
+  grid-template-columns: minmax(280px, 0.95fr) minmax(360px, 1.05fr);
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.search-results-grid .results-pane {
+  border: 1px solid #e1e6ee;
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: #fbfcfe;
 }
 
 .results-pane,
@@ -1140,7 +1162,8 @@ dialog {
   .workspace-grid.compact,
   .preview-grid,
   .source-editor-grid,
-  .search-preview-layout {
+  .search-preview-layout,
+  .search-results-grid {
     grid-template-columns: 1fr;
   }
 

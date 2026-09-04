@@ -155,6 +155,16 @@
           <p class="status-line upload-status" id="lyricsTextStatus">可粘贴 LRC 或 JSON 歌词</p>
         </section>
       </div>
+
+      <div class="side-page" data-page-panel="search">
+        <section class="panel">
+          <div class="section-heading">
+            <h2>任务列表</h2>
+            <button type="button" id="refreshJobs" class="plain-button">刷新</button>
+          </div>
+          <div class="job-list" id="jobList"></div>
+        </section>
+      </div>
     </aside>
 
     <main class="player">
@@ -206,7 +216,7 @@
             <span>♪</span>
             <div>
               <h2>搜索歌词 + 歌曲</h2>
-              <p class="meta-line">一个关键词同时搜歌词来源（聚合）与网易云歌曲；结果只预览，不写入歌库。</p>
+              <p class="meta-line">一个关键词同时搜歌词来源（默认网易云）与网易云歌曲；结果只预览，不写入歌库。</p>
             </div>
           </div>
           <div class="workspace-grid compact">
@@ -225,8 +235,8 @@
             <label class="field">
               <span>歌词来源</span>
               <select id="workspaceProvider">
+                <option value="netease" selected>网易云</option>
                 <option value="aggregate">聚合来源</option>
-                <option value="netease">网易云</option>
                 <option value="qq">QQ 音乐</option>
                 <option value="kugou">酷狗</option>
                 <option value="lrclib">LRCLIB</option>
@@ -236,103 +246,94 @@
           <div class="step-actions search-actions">
             <button type="button" id="searchLyrics">搜索</button>
           </div>
-          <p class="status-line" id="searchLyricsStatus">输入歌名或歌手后点搜索。</p>
-          <details class="search-fold" id="lyricsSearchFold">
-            <summary>搜索结果与确认（歌词 / 网易云歌曲 / 预览 / 下载）</summary>
-            <div class="search-preview-layout">
-              <article class="results-pane">
-                <div class="section-heading">
-                  <h3>歌词来源</h3>
-                  <span class="meta-line" id="searchSummary">暂无结果</span>
-                </div>
-                <div class="search-results" id="searchResults"></div>
-              </article>
-              <article class="results-pane">
-                <div class="section-heading">
-                  <h3>网易云歌曲</h3>
-                  <span class="meta-line" id="neteaseResultStatus">随搜索显示</span>
-                </div>
-                <div class="netease-results" id="neteaseResults"></div>
-              </article>
-            </div>
-            <div class="search-preview-layout">
-              <article class="preview-pane">
-                <div class="section-heading">
-                  <h3>来源预览</h3>
-                  <button type="button" id="usePreview">使用这个版本</button>
-                </div>
-                <div class="preview-box" id="mergedPreview"></div>
-              </article>
-              <article class="preview-pane">
-                <div class="section-heading">
-                  <h3>网易云下载</h3>
-                </div>
-                <label class="field">
-                  <span>下载音质</span>
-                  <select id="neteaseQuality">
-                    <option value="exhigh" selected>极高 / 320 kbps</option>
-                    <option value="lossless">无损</option>
-                    <option value="hires">Hi-Res</option>
-                  </select>
-                </label>
-                <button type="button" id="neteaseDownload" class="wide-button" disabled>下载选中歌曲</button>
-              </article>
-            </div>
-          </details>
+          <p class="status-line" id="searchLyricsStatus">输入歌名或歌手后点搜索；歌词与歌曲默认选中第一条。</p>
 
-          <details class="search-fold netease-panel-fold">
-            <summary>网易云登录 / 连接（确认用）</summary>
-            <section class="netease-panel" id="neteasePanel">
-              <p class="status-line" id="neteaseStatus">正在检查网易云登录状态...</p>
-              <div class="button-row">
-                <button type="button" id="neteaseLogin">扫码登录</button>
-                <button type="button" id="neteaseLogout" hidden>退出网易云</button>
+          <div class="search-results-grid">
+            <article class="results-pane">
+              <div class="section-heading">
+                <h3>歌词来源</h3>
+                <span class="meta-line" id="searchSummary">暂无结果</span>
               </div>
-              <div class="netease-qr" id="neteaseQrWrap" hidden>
-                <img id="neteaseQrImage" alt="网易云登录二维码">
-                <p class="status-line" id="neteaseQrMessage">等待扫码...</p>
+              <div class="search-results" id="searchResults"></div>
+            </article>
+            <article class="results-pane">
+              <div class="section-heading">
+                <h3>网易云歌曲</h3>
+                <span class="meta-line" id="neteaseResultStatus">随搜索显示</span>
               </div>
-              <details class="netease-noscan" id="neteaseNoScanWrap">
-                <summary>免扫码登录（手机验证码 / 粘贴 Cookie）</summary>
-                <p class="status-line" id="neteaseNoScanStatus"></p>
-                <label class="field">
-                  <span>手机号（验证码登录）</span>
-                  <div class="netease-phone-row">
-                    <input id="neteaseCountryCode" type="tel" value="86" inputmode="numeric" aria-label="国家区号">
-                    <input id="neteasePhone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="手机号">
-                  </div>
-                </label>
-                <label class="field">
-                  <span>短信验证码</span>
-                  <div class="netease-phone-row">
-                    <input id="neteaseCaptcha" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位验证码">
-                    <button type="button" id="neteaseSendCaptcha" class="wide-button">发送验证码</button>
-                  </div>
-                </label>
-                <div class="button-row">
-                  <button type="button" id="neteaseCaptchaLogin" class="wide-button">验证码登录</button>
-                </div>
-                <label class="field">
-                  <span>粘贴 Cookie 登录（官方网页登录后复制）</span>
-                  <textarea id="neteaseCookieInput" rows="3" placeholder="MUSIC_U=xxx; __csrf=xxx; ..."></textarea>
-                </label>
-                <div class="button-row">
-                  <button type="button" id="neteaseCookieLogin" class="wide-button">保存 Cookie 登录</button>
-                </div>
-              </details>
-              <details class="netease-connection">
-                <summary>连接设置</summary>
-                <label class="field">
-                  <span>网易云桥接地址</span>
-                  <input id="neteaseBridgeUrl" type="url" placeholder="http://your-server.local:8503">
-                </label>
-                <button type="button" id="neteaseSaveBridge" class="wide-button">保存并重连</button>
-              </details>
-              <input id="neteaseQuery" type="search" autocomplete="off" hidden>
-              <button type="button" id="neteaseSearch" hidden>搜索网易云</button>
-            </section>
-          </details>
+              <div class="netease-results" id="neteaseResults"></div>
+            </article>
+          </div>
+
+          <div class="netease-download-options">
+            <label class="field">
+              <span>下载音质</span>
+              <select id="neteaseQuality">
+                <option value="exhigh" selected>极高 / 320 kbps</option>
+                <option value="lossless">无损</option>
+                <option value="hires">Hi-Res</option>
+              </select>
+            </label>
+            <label class="check-row">
+              <input id="neteaseDownloadWithAi" type="checkbox">
+              <span>下载后 AI 生成 ruby JSON</span>
+            </label>
+            <button type="button" id="neteaseDownload" class="wide-button" disabled>下载选中歌曲</button>
+          </div>
         </section>
+
+        <details class="search-fold netease-panel-fold">
+          <summary>网易云登录 / 连接（确认用）</summary>
+          <section class="netease-panel" id="neteasePanel">
+            <p class="status-line" id="neteaseStatus">正在检查网易云登录状态...</p>
+            <div class="button-row">
+              <button type="button" id="neteaseLogin">扫码登录</button>
+              <button type="button" id="neteaseLogout" hidden>退出网易云</button>
+            </div>
+            <div class="netease-qr" id="neteaseQrWrap" hidden>
+              <img id="neteaseQrImage" alt="网易云登录二维码">
+              <p class="status-line" id="neteaseQrMessage">等待扫码...</p>
+            </div>
+            <details class="netease-noscan" id="neteaseNoScanWrap">
+              <summary>免扫码登录（手机验证码 / 粘贴 Cookie）</summary>
+              <p class="status-line" id="neteaseNoScanStatus"></p>
+              <label class="field">
+                <span>手机号（验证码登录）</span>
+                <div class="netease-phone-row">
+                  <input id="neteaseCountryCode" type="tel" value="86" inputmode="numeric" aria-label="国家区号">
+                  <input id="neteasePhone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="手机号">
+                </div>
+              </label>
+              <label class="field">
+                <span>短信验证码</span>
+                <div class="netease-phone-row">
+                  <input id="neteaseCaptcha" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位验证码">
+                  <button type="button" id="neteaseSendCaptcha" class="wide-button">发送验证码</button>
+                </div>
+              </label>
+              <div class="button-row">
+                <button type="button" id="neteaseCaptchaLogin" class="wide-button">验证码登录</button>
+              </div>
+              <label class="field">
+                <span>粘贴 Cookie 登录（官方网页登录后复制）</span>
+                <textarea id="neteaseCookieInput" rows="3" placeholder="MUSIC_U=xxx; __csrf=xxx; ..."></textarea>
+              </label>
+              <div class="button-row">
+                <button type="button" id="neteaseCookieLogin" class="wide-button">保存 Cookie 登录</button>
+              </div>
+            </details>
+            <details class="netease-connection">
+              <summary>连接设置</summary>
+              <label class="field">
+                <span>网易云桥接地址</span>
+                <input id="neteaseBridgeUrl" type="url" placeholder="http://your-server.local:8503">
+              </label>
+              <button type="button" id="neteaseSaveBridge" class="wide-button">保存并重连</button>
+            </details>
+            <input id="neteaseQuery" type="search" autocomplete="off" hidden>
+            <button type="button" id="neteaseSearch" hidden>搜索网易云</button>
+          </section>
+        </details>
 
         <section class="workspace-section workspace-step">
           <div class="step-heading">
@@ -403,15 +404,6 @@
               <button type="button" id="testApiSettings">测试连接</button>
             </div>
           </section>
-        </details>
-
-        <details class="search-fold" open>
-          <summary>任务列表</summary>
-          <div class="section-heading">
-            <h2>任务列表</h2>
-            <button type="button" id="refreshJobs" class="plain-button">刷新</button>
-          </div>
-          <div class="job-list" id="jobList"></div>
         </details>
       </section>
     </main>

@@ -98,7 +98,6 @@ const els = {
   workspaceProvider: document.getElementById("workspaceProvider"),
   searchLyrics: document.getElementById("searchLyrics"),
   searchLyricsStatus: document.getElementById("searchLyricsStatus"),
-  usePreview: document.getElementById("usePreview"),
   saveWorkspace: document.getElementById("saveWorkspace"),
   realignWorkspace: document.getElementById("realignWorkspace"),
   generateWorkspaceRuby: document.getElementById("generateWorkspaceRuby"),
@@ -106,7 +105,6 @@ const els = {
   publishWorkspace: document.getElementById("publishWorkspace"),
   searchSummary: document.getElementById("searchSummary"),
   searchResults: document.getElementById("searchResults"),
-  mergedPreview: document.getElementById("mergedPreview"),
   workspaceOriginalLrc: document.getElementById("workspaceOriginalLrc"),
   workspaceTranslationLrc: document.getElementById("workspaceTranslationLrc"),
   workspaceRomanLrc: document.getElementById("workspaceRomanLrc"),
@@ -1256,6 +1254,7 @@ function renderSearchResults() {
 }
 
 function renderMergedRows(rows) {
+  if (!els.mergedPreview) return;
   els.mergedPreview.innerHTML = "";
   if (!rows?.length) {
     els.mergedPreview.textContent = "暂无可预览内容";
@@ -1408,10 +1407,15 @@ async function searchAll() {
     state.workspace.preview = null;
     renderSearchResults();
     clearGeneratedPreview();
-    const fold = document.getElementById("lyricsSearchFold");
-    if (fold) fold.open = true;
+    if (state.workspace.results.length) {
+      await selectSearchResult(0);
+    }
     const errorCount = Object.keys(result.errors || {}).length;
-    const doneMessage = errorCount ? `搜索完成，${errorCount} 个来源失败，已显示可用结果` : "搜索完成";
+    const doneMessage = state.workspace.results.length
+      ? `搜索完成，已默认选中第一条${errorCount ? `，${errorCount} 个来源失败` : ""}`
+      : errorCount
+        ? `搜索完成，但 ${errorCount} 个来源均失败`
+        : "没有找到歌词";
     setWorkspaceStatus(doneMessage);
     setSearchLyricsStatus(doneMessage);
   } catch (error) {
@@ -1464,31 +1468,6 @@ async function saveWorkspace({ silent = false } = {}) {
     showToast("工作源已保存");
   }
   return workspace;
-}
-
-async function usePreview() {
-  const songName = workspaceName();
-  if (!songName) {
-    showToast("请先输入歌曲名");
-    return;
-  }
-  if (!state.workspace.selectedResult || !state.workspace.preview) {
-    showToast("请先选择一个搜索结果");
-    return;
-  }
-  const workspace = await requestJson(`/api/lyrics-workspace/${encodeURIComponent(songName)}/use-preview`, {
-    method: "POST",
-    body: JSON.stringify({
-      song_name: songName,
-      artist: els.workspaceArtist.value.trim(),
-      result: state.workspace.selectedResult,
-      preview: state.workspace.preview,
-    }),
-  });
-  populateWorkspace(workspace);
-  setWorkspaceStatus("已保存为工作源，可在下方继续编辑与生成");
-  setSearchLyricsStatus("已保存为工作源，可继续生成");
-  showToast("已保存工作源");
 }
 
 async function loadWorkspace(name) {
@@ -1759,7 +1738,6 @@ els.testApiSettings.addEventListener("click", async () => {
 });
 
 els.searchLyrics.addEventListener("click", () => searchAll());
-els.usePreview.addEventListener("click", () => usePreview().catch((error) => showToast(error.message)));
 els.saveWorkspace.addEventListener("click", () => saveWorkspace().catch((error) => showToast(error.message)));
 els.realignWorkspace.addEventListener("click", () => realignWorkspace().catch((error) => showToast(error.message)));
 els.generateWorkspaceRuby.addEventListener("click", () => generateWorkspaceRuby().catch((error) => {
