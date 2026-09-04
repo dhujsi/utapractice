@@ -159,6 +159,29 @@
       <div class="side-page" data-page-panel="search">
         <section class="panel">
           <div class="section-heading">
+            <h2>接口设置</h2>
+          </div>
+          <label class="field">
+            <span>OpenAI 兼容 Base URL</span>
+            <input id="baseUrlInput" type="url" placeholder="https://api.openai.com/v1">
+          </label>
+          <label class="field">
+            <span>API Key</span>
+            <input id="apiKeyInput" type="password" placeholder="留空则不修改已保存 Key">
+          </label>
+          <label class="field">
+            <span>模型</span>
+            <input id="modelInput" type="text" placeholder="deepseek-v4-pro">
+          </label>
+          <p class="status-line" id="aiSettingsStatus">正在读取接口状态...</p>
+          <div class="button-row">
+            <button type="button" id="saveApiSettings">保存接口设置</button>
+            <button type="button" id="testApiSettings">测试连接</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
             <h2>任务列表</h2>
             <button type="button" id="refreshJobs" class="plain-button">刷新</button>
           </div>
@@ -219,18 +242,10 @@
               <p class="meta-line">一个关键词同时搜歌词来源（默认网易云）与网易云歌曲；结果只预览，不写入歌库。</p>
             </div>
           </div>
-          <div class="workspace-grid compact">
+          <div class="search-input-row">
             <label class="field">
               <span>歌名 / 歌手</span>
               <input id="workspaceSongName" type="text" autocomplete="off">
-            </label>
-            <label class="field">
-              <span>歌手</span>
-              <input id="workspaceArtist" type="text" autocomplete="off">
-            </label>
-            <label class="field">
-              <span>专辑</span>
-              <input id="workspaceAlbum" type="text" autocomplete="off">
             </label>
             <label class="field">
               <span>歌词来源</span>
@@ -242,10 +257,21 @@
                 <option value="lrclib">LRCLIB</option>
               </select>
             </label>
+            <button type="button" id="searchLyrics" class="search-go-button">搜索</button>
           </div>
-          <div class="step-actions search-actions">
-            <button type="button" id="searchLyrics">搜索</button>
-          </div>
+          <details class="search-fold search-advanced">
+            <summary>高级选项（歌手 / 专辑）</summary>
+            <div class="workspace-grid">
+              <label class="field">
+                <span>歌手</span>
+                <input id="workspaceArtist" type="text" autocomplete="off">
+              </label>
+              <label class="field">
+                <span>专辑</span>
+                <input id="workspaceAlbum" type="text" autocomplete="off">
+              </label>
+            </div>
+          </details>
           <p class="status-line" id="searchLyricsStatus">输入歌名或歌手后点搜索；歌词与歌曲默认选中第一条。</p>
 
           <div class="search-results-grid">
@@ -382,29 +408,6 @@
           </div>
           <div class="generated-preview" id="generatedPreviewBox"></div>
         </section>
-
-        <details class="search-fold">
-          <summary>接口设置</summary>
-          <section class="panel">
-            <label class="field">
-              <span>OpenAI 兼容 Base URL</span>
-              <input id="baseUrlInput" type="url" placeholder="https://api.openai.com/v1">
-            </label>
-            <label class="field">
-              <span>API Key</span>
-              <input id="apiKeyInput" type="password" placeholder="留空则不修改已保存 Key">
-            </label>
-            <label class="field">
-              <span>模型</span>
-              <input id="modelInput" type="text" placeholder="deepseek-v4-pro">
-            </label>
-            <p class="status-line" id="aiSettingsStatus">正在读取接口状态...</p>
-            <div class="button-row">
-              <button type="button" id="saveApiSettings">保存接口设置</button>
-              <button type="button" id="testApiSettings">测试连接</button>
-            </div>
-          </section>
-        </details>
       </section>
     </main>
   </div>

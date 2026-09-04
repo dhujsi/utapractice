@@ -853,7 +853,7 @@ ruby rt {
 
 /* 搜索结果：始终可见的两栏 */
 .search-results-grid {
-  align-items: start;
+  align-items: stretch;
   display: grid;
   grid-template-columns: minmax(280px, 0.95fr) minmax(360px, 1.05fr);
   gap: 18px;
@@ -865,6 +865,47 @@ ruby rt {
   border-radius: 12px;
   padding: 12px 14px;
   background: #fbfcfe;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* 歌词 / 网易云两个结果框统一高度对齐 */
+.search-results-grid .search-results,
+.search-results-grid .netease-results {
+  height: clamp(240px, 38dvh, 360px);
+  max-height: none;
+  flex: 1 1 auto;
+}
+
+/* 搜索框 + 来源 + 按钮同一行 */
+.search-input-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) minmax(160px, 0.6fr) auto;
+  align-items: end;
+  gap: 14px;
+}
+
+.search-input-row .search-go-button {
+  min-height: 40px;
+  padding: 8px 22px;
+  background: #ff4b55;
+  border-color: #ff4b55;
+  color: #fff;
+  font-weight: 700;
+}
+
+.search-input-row .search-go-button:hover {
+  background: #e63b45;
+  border-color: #e63b45;
+}
+
+.search-advanced {
+  margin-top: 12px;
+}
+
+.search-advanced .workspace-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .results-pane,
@@ -1165,6 +1206,19 @@ dialog {
   .search-preview-layout,
   .search-results-grid {
     grid-template-columns: 1fr;
+  }
+
+  .search-input-row {
+    grid-template-columns: 1fr;
+  }
+
+  .search-advanced .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .search-results-grid .search-results,
+  .search-results-grid .netease-results {
+    height: 320px;
   }
 
   .preview-box,

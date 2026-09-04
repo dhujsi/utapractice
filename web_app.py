@@ -377,6 +377,11 @@ def is_empty_content_error(exc):
     return "空内容" in str(exc)
 
 
+def is_truncated_error(exc):
+    message = str(exc)
+    return "截断" in message or "finish_reason=length" in message
+
+
 def chat_json(client, model, system_prompt, payload, max_tokens=None, json_object=False):
     kwargs = {
         "model": model,
@@ -399,7 +404,15 @@ def chat_json(client, model, system_prompt, payload, max_tokens=None, json_objec
             raise
         kwargs.pop("response_format", None)
         completion = client.chat.completions.create(**kwargs)
-    return parse_model_json(completion.choices[0].message.content)
+    choice = completion.choices[0]
+    content = choice.message.content
+    if not (content or "").strip():
+        # 区分「真空回」与「推理型模型把 max_tokens 预算耗尽导致的空回」：
+        # 后者 finish_reason=length，重试时应扩大预算而不是盲目原样重试。
+        if getattr(choice, "finish_reason", None) == "length":
+            raise ValueError("模型输出被 max_tokens 截断（finish_reason=length），返回内容为空")
+        raise ValueError("模型返回空内容，不是 JSON")
+    return parse_model_json(content)
 
 
 RUBY_GENERATION_SYSTEM_PROMPT = """You are a highly precise karaoke lyric alignment and ruby annotation engine.
@@ -1606,11 +1619,14 @@ def perform_ruby_from_rows(payload, report=lambda _message: None, job_id=None):
         }
         last_error = None
         last_result = None
+        chunk_max_tokens = 8000
         for attempt in range(1, max_attempts + 1):
             raise_if_stopped(job_id)
             request_payload = payload_data
-            # 空内容多为瞬时抖动：直接原样重试，避免把空的 previous_output 丢给回修提示词。
-            use_repair = attempt > 1 and not is_empty_content_error(last_error)
+            # 空内容/截断多为瞬时抖动或推理型模型把预算耗尽：原样重试并扩大预算，
+            # 避免把空的 previous_output 丢给回修提示词；其它校验失败才走回修。
+            retryable_blank = is_empty_content_error(last_error) or is_truncated_error(last_error)
+            use_repair = attempt > 1 and not retryable_blank
             if use_repair:
                 report(f"第 {chunk_number}/{len(chunks)} 段回修 {attempt - 1}/{max_attempts - 1}")
                 request_payload = {
@@ -1625,7 +1641,7 @@ def perform_ruby_from_rows(payload, report=lambda _message: None, job_id=None):
                     },
                 }
             try:
-                result = chat_json(client, model, system_prompt, request_payload, max_tokens=6000, json_object=True)
+                result = chat_json(client, model, system_prompt, request_payload, max_tokens=chunk_max_tokens, json_object=True)
                 raise_if_stopped(job_id)
                 last_result = result
                 return normalize_workspace_generated_chunk(result, chunk["target_rows"], report)
@@ -1637,7 +1653,11 @@ def perform_ruby_from_rows(payload, report=lambda _message: None, job_id=None):
                 if is_fatal_api_error(exc):
                     raise FatalJobError(friendly_api_error(exc)) from exc
                 last_error = exc
-                report(f"第 {chunk_number}/{len(chunks)} 段第 {attempt}/{max_attempts} 次失败：{exc}")
+                if is_truncated_error(exc) or is_empty_content_error(exc):
+                    chunk_max_tokens = min(chunk_max_tokens + 4000, 24000)
+                    report(f"第 {chunk_number}/{len(chunks)} 段第 {attempt}/{max_attempts} 次失败：{exc}；已把输出预算扩到 {chunk_max_tokens} 重试")
+                else:
+                    report(f"第 {chunk_number}/{len(chunks)} 段第 {attempt}/{max_attempts} 次失败：{exc}")
                 if attempt < max_attempts:
                     time.sleep(min(2 * attempt, 6))
         raise ValueError(f"第 {chunk_number}/{len(chunks)} 段连续 {max_attempts} 次失败：{last_error}")

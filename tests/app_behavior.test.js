@@ -484,11 +484,22 @@ test("workspace ruby generation uses larger configurable chunks and fails fast o
   assert.match(webApp, /def is_fatal_api_error\(exc\):/);
   assert.match(webApp, /def friendly_api_error\(exc\):/);
   assert.match(webApp, /if is_fatal_api_error\(exc\):\n\s+raise FatalJobError\(friendly_api_error\(exc\)\) from exc/);
-  assert.match(webApp, /use_repair = attempt > 1 and not is_empty_content_error\(last_error\)/);
+  assert.match(webApp, /use_repair = attempt > 1 and not retryable_blank/);
+  assert.match(webApp, /chunk_max_tokens = 8000/);
+  assert.match(webApp, /retryable_blank = is_empty_content_error\(last_error\) or is_truncated_error\(last_error\)/);
+  assert.match(webApp, /chunk_max_tokens = min\(chunk_max_tokens \+ 4000, 24000\)/);
   assert.match(webApp, /except FatalJobError:/);
   assert.match(webApp, /except FatalJobError as exc:/);
   assert.match(webApp, /executor\.shutdown\(wait=False, cancel_futures=True\)/);
   assert.match(webApp, /if is_fatal_api_error\(exc\):\n\s+exc = ValueError\(friendly_api_error\(exc\)\)/);
+});
+
+test("reasoning-model truncation is distinguished from genuinely empty responses", () => {
+  assert.match(webApp, /def is_truncated_error\(exc\):/);
+  assert.match(webApp, /finish_reason=length/);
+  assert.match(webApp, /返回内容为空/);
+  assert.match(webApp, /模型返回空内容，不是 JSON/);
+  assert.match(webApp, /if getattr\(choice, "finish_reason", None\) == "length":/);
 });
 
 test("one search queries lyric sources and NetEase songs together on the same page", () => {
@@ -569,4 +580,19 @@ test("downloading an existing song compares file info and skips or overwrites in
   assert.match(neteaseJs, /payload\.skipped\)/);
   assert.match(neteaseJs, /payload\.overwritten\)/);
   assert.match(neteaseJs, /populateWorkspace\(workspace\)/);
+});
+
+test("AI settings sit at the top of the sidebar search panel", () => {
+  assert.match(indexHtml, /data-page-panel="search"[\s\S]*id="baseUrlInput"/);
+  assert.match(indexHtml, /data-page-panel="search"[\s\S]*id="jobList"/);
+  assert.doesNotMatch(indexHtml, /<details class="search-fold">\s*<summary>接口设置<\/summary>/);
+});
+
+test("search box, source and button share one row; artist/album fold into advanced options", () => {
+  assert.match(indexHtml, /class="search-input-row"[\s\S]*id="workspaceSongName"[\s\S]*id="searchLyrics"/);
+  assert.match(indexHtml, /search-advanced[\s\S]*id="workspaceArtist"[\s\S]*id="workspaceAlbum"/);
+  assert.doesNotMatch(indexHtml, /workspace-grid compact/);
+  assert.match(appCss, /\.search-input-row\s*\{/);
+  assert.match(appCss, /\.search-go-button/);
+  assert.match(appCss, /\.search-results-grid \.search-results,\n  \.search-results-grid \.netease-results/);
 });
