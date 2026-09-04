@@ -416,7 +416,7 @@ def chat_json(client, model, system_prompt, payload, max_tokens=None, json_objec
 
 
 RUBY_GENERATION_SYSTEM_PROMPT = """You are a highly precise karaoke lyric alignment and ruby annotation engine.
-Your sole task is to inject `<ruby>` tags based on provided pronunciations and output strictly in JSON format.
+Your sole task is to wrap EVERY Kanji (or Chinese Hanzi) in `<ruby>` tags and output strictly in JSON format.
 
 ### CORE CONSTRAINTS
 1. JSON ONLY: Output a single valid JSON object/array matching the requested schema. Do not include markdown code blocks, explanations, or preamble.
@@ -424,13 +424,23 @@ Your sole task is to inject `<ruby>` tags based on provided pronunciations and o
    - NEVER normalize, modernize, translate, or rewrite text. For example, keep 未來 as 未來, do not change it to 未来.
    - Preserve all spaces and punctuation exactly.
 
+### MANDATORY RUBY COVERAGE
+1. EVERY Kanji character in a Japanese lyric line MUST be wrapped as `<ruby>Kanji<rt>reading</rt></ruby>`. Output with any unannotated Kanji will be REJECTED.
+   - Required: `<ruby>数十億<rt>すうじゅうおく</rt></ruby>もの　<ruby>鼓動<rt>こどう</rt></ruby>の<ruby>数<rt>かず</rt></ruby>さえ`
+   - REJECTED: `数十億もの　鼓動の数さえ` (plain text, no ruby)
+2. For Chinese songs, annotate every Hanzi with pinyin in `<rt>`.
+3. Kana (hiragana/katakana), English, and romaji need NO ruby.
+
+### READING SOURCE
+1. Use the `roman_or_pronunciation` field when it provides the reading.
+2. When no reading is provided, DERIVE the correct reading yourself from context (you are an expert in Japanese readings). Never skip ruby just because no reading was supplied.
+3. If genuinely unsure, still provide your best reading rather than leaving the Kanji unannotated.
+
 ### RUBY ANNOTATION RULES
-1. Target Characters: Add ruby ONLY to characters that require pronunciation hints, such as Kanji in Japanese or specific Hanzi in Chinese. DO NOT add ruby to Kana, standard English, or romaji.
-2. Structure: Use the format `<ruby>Base<rt>Reading</rt></ruby>`. Never append readings inline. For example, output `<ruby>君<rt>きみ</rt></ruby>が`, NEVER `君きみが`.
-3. Okurigana for Japanese: The `<rt>` tag must only contain the reading for the Kanji. The okurigana remains outside.
+1. Structure: Use the format `<ruby>Base<rt>Reading</rt></ruby>`. Never append readings inline. For example, output `<ruby>君<rt>きみ</rt></ruby>が`, NEVER `君きみが`.
+2. Okurigana for Japanese: The `<rt>` tag must only contain the reading for the Kanji. The okurigana remains outside.
    - Correct: `<ruby>渇<rt>かわ</rt></ruby>いた`
    - Incorrect: `<ruby>渇<rt>か</rt></ruby>いた` or `<ruby>渇い<rt>かわい</rt></ruby>た`
-4. Missing or Uncertain Readings: If a reading is uncertain or missing in the source, leave the character unannotated.
 
 ### DATA HANDLING
 1. Translations: Put translations ONLY in the `translation` field. NEVER put translations, meanings, or `<br>` tags inside `original_html`.
@@ -1068,6 +1078,24 @@ def lyric_base_key(value):
     return re.sub(r"\s+", "", text)
 
 
+CJK_IDEOGRAPH_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def count_kanji(text):
+    return len(CJK_IDEOGRAPH_RE.findall(str(text or "")))
+
+
+def kanji_coverage(original_html, original_text):
+    """返回 (已标注汉字数, 总汉字数)；原文无汉字时返回 None（不做校验）。"""
+    total = count_kanji(strip_html(original_text))
+    if total == 0:
+        return None
+    covered = sum(
+        count_kanji(base) for base in re.findall(r"<ruby>([^<]*)<rt>", original_html or "", flags=re.S)
+    )
+    return covered, total
+
+
 class RubyStructureParser(HTMLParser):
     allowed_tags = {"ruby", "rt", "rp"}
 
@@ -1141,6 +1169,11 @@ def normalize_workspace_generated_chunk(result, target_rows, report):
             )
         if str(source.get("original", "") or "").strip() and not strip_html(original_html):
             raise ValueError(f"{label} 的 original_html 为空")
+        coverage = kanji_coverage(original_html, source.get("original", ""))
+        if coverage:
+            covered, total = coverage
+            if covered < total:
+                raise ValueError(f"{label} 有 {total} 个汉字未标注 ruby（已标注 {covered}），触发回修")
         return {
             "time": source.get("time", 0),
             "original_html": original_html,
@@ -1230,6 +1263,11 @@ def validate_generated_workspace_lyrics(generated, rows):
         ruby_errors = validate_ruby_structure(item.get("original_html", ""))
         if ruby_errors:
             errors.append(f"第 {position + 1} 行 ruby HTML 结构非法：{ruby_errors[0]}")
+        coverage = kanji_coverage(item.get("original_html", ""), row.get("original", ""))
+        if coverage:
+            covered, total = coverage
+            if covered < total:
+                errors.append(f"第 {position + 1} 行有 {total} 个汉字未标注 ruby（已标注 {covered}）")
         if lyric_base_key(item.get("original_html", "")) != lyric_base_key(row.get("original", "")):
             errors.append(
                 f"第 {position + 1} 行原文被改写或读音被拼进正文：期望 {row.get('original', '')}，得到 {strip_html(item.get('original_html', ''))}"
