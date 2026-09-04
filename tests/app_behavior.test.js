@@ -554,3 +554,19 @@ test("NetEase download offers optional AI ruby generation that seeds a workspace
   assert.match(webApp, /def api_seed_workspace_from_song\(name\):/);
   assert.match(webApp, /这首歌还没有歌词，无法生成 ruby JSON/);
 });
+
+test("selected search result adopts the actual song title instead of the search keyword", () => {
+  assert.match(appJs, /if \(result\.title\) els\.workspaceSongName\.value = result\.title;/);
+  assert.match(appJs, /工作源歌名用实际曲名，而不是搜索词/);
+});
+
+test("downloading an existing song compares file info and skips or overwrites instead of failing", () => {
+  assert.doesNotMatch(neteaseBridge, /raise FileExistsError/);
+  assert.match(neteaseBridge, /def _remote_audio_size\(remote_url\)/);
+  assert.match(neteaseBridge, /remote_size and abs\(remote_size - local_size\) < 1024 \* 1024/);
+  assert.match(neteaseBridge, /"skipped": skipped/);
+  assert.match(neteaseBridge, /"overwritten": overwritten/);
+  assert.match(neteaseJs, /payload\.skipped\)/);
+  assert.match(neteaseJs, /payload\.overwritten\)/);
+  assert.match(neteaseJs, /populateWorkspace\(workspace\)/);
+});

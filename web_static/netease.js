@@ -367,7 +367,13 @@
           with_lyrics: withAi,
         }),
       });
-      setResultStatus(`已下载：${payload.filename}`, "success");
+      if (payload.skipped) {
+        setResultStatus(`「${payload.song_name}」音频已存在，跳过下载${withAi ? "，继续处理歌词" : ""}`, "success");
+      } else if (payload.overwritten) {
+        setResultStatus(`已覆盖下载：${payload.filename}`, "success");
+      } else {
+        setResultStatus(`已下载：${payload.filename}`, "success");
+      }
 
       if (typeof refreshSongsAfterLibraryMutation === "function") {
         await refreshSongsAfterLibraryMutation(payload.song_name).catch(() => {});
@@ -377,24 +383,25 @@
 
       if (withAi) {
         if (!payload.lyrics_saved && !payload.lyrics_existing) {
-          setResultStatus("已下载，但没有拿到歌词，未提交 AI 生成", "error");
+          setResultStatus("没有拿到歌词，未提交 AI 生成", "error");
           return;
         }
         try {
-          await requestJson(`/api/lyrics-workspace/${encodeURIComponent(payload.song_name)}/from-song`, {
+          const workspace = await requestJson(`/api/lyrics-workspace/${encodeURIComponent(payload.song_name)}/from-song`, {
             method: "POST",
             body: JSON.stringify({}),
           });
+          if (typeof populateWorkspace === "function") populateWorkspace(workspace);
           const job = await requestJson("/api/convert-jobs", {
             method: "POST",
             body: JSON.stringify({ type: "generate_ruby_from_rows", song_name: payload.song_name, concurrency: 4 }),
           });
           if (typeof loadJobs === "function") await loadJobs();
           if (typeof scheduleJobPolling === "function") scheduleJobPolling();
-          setResultStatus(`已下载并提交 AI 生成：${job.song_name}`, "success");
+          setResultStatus(`已${payload.skipped ? "跳过下载，" : ""}提交 AI 生成：${job.song_name}`, "success");
           showToast("已提交 AI 生成任务");
         } catch (error) {
-          setResultStatus(`下载完成，但 AI 生成提交失败：${error.message}`, "error");
+          setResultStatus(`AI 生成提交失败：${error.message}`, "error");
         }
       }
     } catch (error) {

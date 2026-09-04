@@ -173,11 +173,29 @@ def extension_for(info, response):
     return ".mp3"
 
 
+def _remote_audio_size(remote_url):
+    """HEAD 请求远端音频，返回 Content-Length；拿不到则返回 0。"""
+    try:
+        req = Request(
+            remote_url,
+            method="HEAD",
+            headers={
+                "User-Agent": "Mozilla/5.0 UtaPractice",
+                "Referer": "https://music.163.com/",
+            },
+        )
+        with urlopen(req, timeout=DOWNLOAD_TIMEOUT) as response:
+            try:
+                return int(response.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                return 0
+    except Exception:
+        return 0
+
+
 def download_song(song_id, name, artist, level, with_lyrics):
     stem = safe_name(name)
     existing = existing_audio_for_stem(stem)
-    if existing:
-        raise FileExistsError(f"「{stem}」已经有本地音频：{existing.name}")
 
     url_payload = None
     errors = []
@@ -200,34 +218,53 @@ def download_song(song_id, name, artist, level, with_lyrics):
     if parsed.scheme not in {"http", "https"}:
         raise RuntimeError("网易云返回了不支持的下载地址")
 
-    req = Request(
-        remote_url,
-        headers={
-            "User-Agent": "Mozilla/5.0 UtaPractice",
-            "Referer": "https://music.163.com/",
-        },
-    )
+    # 已有音频时对比文件信息，决定覆盖还是跳过——绝不因已存在而卡住歌词/AI 流程。
+    skipped = False
+    overwritten = False
+    if existing:
+        remote_size = _remote_audio_size(remote_url)
+        local_size = existing.stat().st_size if existing.exists() else 0
+        if local_size <= 0:
+            overwritten = True  # 本地文件损坏/为空 → 覆盖
+        elif remote_size and abs(remote_size - local_size) < 1024 * 1024:
+            skipped = True  # 远端与本地大小基本一致 → 同一首，跳过
+        elif remote_size and remote_size > local_size + 1024 * 1024:
+            overwritten = True  # 远端明显更大 → 更高音质，覆盖
+        else:
+            skipped = True  # 远端更小或未知 → 保留本地更大的文件
 
     temp_path = None
     final_path = None
     total = 0
     try:
-        with urlopen(req, timeout=DOWNLOAD_TIMEOUT) as response:
-            ext = extension_for(url_payload, response)
-            final_path = SONG_DIR / f"{stem}{ext}"
-            fd, temp_name = tempfile.mkstemp(prefix=f".{stem}.", suffix=".download", dir=SONG_DIR)
-            temp_path = Path(temp_name)
-            with os.fdopen(fd, "wb") as out:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > MAX_DOWNLOAD_BYTES:
-                        raise RuntimeError("音频超过下载大小限制")
-                    out.write(chunk)
-            os.replace(temp_path, final_path)
-            temp_path = None
+        if not skipped:
+            req = Request(
+                remote_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 UtaPractice",
+                    "Referer": "https://music.163.com/",
+                },
+            )
+            with urlopen(req, timeout=DOWNLOAD_TIMEOUT) as response:
+                ext = extension_for(url_payload, response)
+                final_path = SONG_DIR / f"{stem}{ext}"
+                fd, temp_name = tempfile.mkstemp(prefix=f".{stem}.", suffix=".download", dir=SONG_DIR)
+                temp_path = Path(temp_name)
+                with os.fdopen(fd, "wb") as out:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_DOWNLOAD_BYTES:
+                            raise RuntimeError("音频超过下载大小限制")
+                        out.write(chunk)
+                os.replace(temp_path, final_path)
+                temp_path = None
+            overwritten = bool(existing)
+        else:
+            final_path = existing
+            total = existing.stat().st_size if existing and existing.exists() else 0
 
         lyrics_saved = False
         lyrics_existing = any((SONG_DIR / f"{stem}{suffix}").exists() for suffix in (".json", ".lrc"))
@@ -241,11 +278,13 @@ def download_song(song_id, name, artist, level, with_lyrics):
             "ok": True,
             "song_name": stem,
             "artist": artist,
-            "filename": final_path.name,
+            "filename": final_path.name if final_path else "",
             "bytes": total,
             "lyrics_saved": lyrics_saved,
             "lyrics_existing": lyrics_existing,
             "level": level,
+            "skipped": skipped,
+            "overwritten": overwritten,
         }
     except Exception:
         if temp_path and temp_path.exists():

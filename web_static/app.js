@@ -1357,6 +1357,8 @@ async function selectSearchResult(index) {
   const result = state.workspace.results[index];
   if (!result) return;
   state.workspace.selectedResult = result;
+  // 选中结果后，工作源歌名用实际曲名，而不是搜索词（任务列表标题也因此正确）。
+  if (result.title) els.workspaceSongName.value = result.title;
   els.searchResults.querySelectorAll(".search-result").forEach((node) => node.classList.toggle("active", Number(node.dataset.index) === index));
   const message = `正在预览：${result.provider} · ${result.title || ""}`;
   setWorkspaceStatus(message);
