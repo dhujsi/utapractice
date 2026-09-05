@@ -390,6 +390,11 @@ def chat_json(client, model, system_prompt, payload, max_tokens=None, json_objec
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ],
         "temperature": 0,
+        # deepseek-v4 系列默认开启思考模式，会把大量 token 耗在 reasoning_content 上，
+        # 推理一旦吃光 max_tokens 预算就返回空 content（finish_reason=length），
+        # 也就是此前反复出现的「空回/截断」。ruby 标注、清洗、转换都是确定性 JSON
+        # 格式化任务，不需要思考——直接关掉，又快又稳又省 token。
+        "extra_body": {"thinking": {"type": "disabled"}},
     }
     if max_tokens:
         kwargs["max_tokens"] = max_tokens

@@ -374,6 +374,12 @@
       } else {
         setResultStatus(`已下载：${payload.filename}`, "success");
       }
+      if (payload.lyrics_translation_saved || payload.lyrics_roman_saved) {
+        const parts = [];
+        if (payload.lyrics_translation_saved) parts.push("翻译");
+        if (payload.lyrics_roman_saved) parts.push("罗马音");
+        showToast(`歌词已含${parts.join("+")}`);
+      }
 
       if (typeof refreshSongsAfterLibraryMutation === "function") {
         await refreshSongsAfterLibraryMutation(payload.song_name).catch(() => {});
