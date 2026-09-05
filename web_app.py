@@ -2236,17 +2236,20 @@ def api_seed_workspace_from_song(name):
             return companion.read_text(encoding="utf-8", errors="replace")
         return ""
 
+    # 下载时新逻辑会额外落盘 {歌名}.zh.lrc（翻译）与 {歌名}.roma.lrc（罗马音），
+    # 与正式歌词是 .lrc 还是 .json 无关，一律优先采用。
+    translation_lrc = companion_lrc(".zh.lrc")
+    roman_lrc = companion_lrc(".roma.lrc")
+
     if song["lyrics_path"].suffix.lower() == ".lrc":
         original_lrc = song["lyrics_path"].read_text(encoding="utf-8", errors="replace")
-        translation_lrc = companion_lrc(".zh.lrc")
-        roman_lrc = companion_lrc(".roma.lrc")
     else:
         lyrics = read_lyrics(song["lyrics_path"])
         if not isinstance(lyrics, list):
             return jsonify({"error": "歌词格式无法解析为时间轴"}), 400
         original_lines = []
-        translation_lines = []
-        roman_lines = []
+        fallback_translation_lines = []
+        fallback_roman_lines = []
         for line in lyrics:
             if not isinstance(line, dict):
                 continue
@@ -2258,15 +2261,20 @@ def api_seed_workspace_from_song(name):
             text = re.sub(r"<[^>]+>", "", text).strip()
             if text:
                 original_lines.append(f"{stamp}{text}")
-            translation = str(line.get("translation") or "").strip()
-            if translation:
-                translation_lines.append(f"{stamp}{translation}")
-            roman = str(line.get("roman") or line.get("roman_or_pronunciation") or "").strip()
-            if roman:
-                roman_lines.append(f"{stamp}{roman}")
+            # 正式 .json 里若已带翻译/罗马音（新生成会带上），无配套文件时兜底采用
+            if not translation_lrc:
+                translation = str(line.get("translation") or "").strip()
+                if translation:
+                    fallback_translation_lines.append(f"{stamp}{translation}")
+            if not roman_lrc:
+                roman = str(line.get("roman") or line.get("roman_or_pronunciation") or "").strip()
+                if roman:
+                    fallback_roman_lines.append(f"{stamp}{roman}")
         original_lrc = "\n".join(original_lines)
-        translation_lrc = "\n".join(translation_lines)
-        roman_lrc = "\n".join(roman_lines)
+        if not translation_lrc:
+            translation_lrc = "\n".join(fallback_translation_lines)
+        if not roman_lrc:
+            roman_lrc = "\n".join(fallback_roman_lines)
 
     workspace = {
         "song_name": song_name,
