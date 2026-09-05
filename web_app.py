@@ -1177,8 +1177,10 @@ def normalize_workspace_generated_chunk(result, target_rows, report):
         coverage = kanji_coverage(original_html, source.get("original", ""))
         if coverage:
             covered, total = coverage
+            if covered == 0:
+                raise ValueError(f"{label} 含汉字但完全未标注 ruby（共 {total} 个汉字），触发回修")
             if covered < total:
-                raise ValueError(f"{label} 有 {total} 个汉字未标注 ruby（已标注 {covered}），触发回修")
+                report(f"提示：{label} 已标注 {covered}/{total} 个汉字，少量汉字未覆盖，请抽查")
         return {
             "time": source.get("time", 0),
             "original_html": original_html,
@@ -1246,9 +1248,11 @@ def normalize_workspace_generated_chunk(result, target_rows, report):
 
 
 def validate_generated_workspace_lyrics(generated, rows):
+    """返回 (errors, warnings)。errors 会阻断写入/发布；warnings 只提示不阻断。"""
     errors = []
+    warnings = []
     if not isinstance(generated, list):
-        return ["生成结果不是 JSON 数组"]
+        return ["生成结果不是 JSON 数组"], []
     if len(generated) != len(rows):
         errors.append(f"行数不一致：期望 {len(rows)}，得到 {len(generated)}")
     for position, row in enumerate(rows[: len(generated)]):
@@ -1272,15 +1276,17 @@ def validate_generated_workspace_lyrics(generated, rows):
         coverage = kanji_coverage(item.get("original_html", ""), row.get("original", ""))
         if coverage:
             covered, total = coverage
-            if covered < total:
-                errors.append(f"第 {position + 1} 行有 {total} 个汉字未标注 ruby（已标注 {covered}）")
+            if covered == 0:
+                errors.append(f"第 {position + 1} 行含汉字但完全未标注 ruby（共 {total} 个汉字）")
+            elif covered < total:
+                warnings.append(f"第 {position + 1} 行已标注 {covered}/{total} 个汉字")
         if lyric_base_key(item.get("original_html", "")) != lyric_base_key(row.get("original", "")):
             errors.append(
                 f"第 {position + 1} 行原文被改写或读音被拼进正文：期望 {row.get('original', '')}，得到 {strip_html(item.get('original_html', ''))}"
             )
         if item.get("translation") is not None and not isinstance(item.get("translation"), str):
             errors.append(f"第 {position + 1} 行 translation 不是字符串")
-    return errors
+    return errors, warnings
 
 
 def normalize_lyric_text(text):
@@ -1765,7 +1771,9 @@ def perform_ruby_from_rows(payload, report=lambda _message: None, job_id=None):
 
     generated = [generated_by_index[int(row["index"])] for row in normalized_rows]
     generated = normalize_converted_lyrics(generated)
-    validation_errors = validate_generated_workspace_lyrics(generated, normalized_rows)
+    validation_errors, validation_warnings = validate_generated_workspace_lyrics(generated, normalized_rows)
+    if validation_warnings:
+        report(f"ruby 覆盖提示：{'；'.join(validation_warnings[:6])}")
     if validation_errors:
         workspace["status"] = "validation_failed"
         workspace["errors"] = [{"error": message} for message in validation_errors[:20]]
@@ -2323,7 +2331,7 @@ def api_publish_lyrics_workspace(name):
     if not isinstance(lyrics, list) or not lyrics:
         return jsonify({"error": "No generated lyrics to publish"}), 400
     lyrics = normalize_converted_lyrics(lyrics)
-    validation_errors = validate_generated_workspace_lyrics(lyrics, workspace.get("line_rows", []))
+    validation_errors, validation_warnings = validate_generated_workspace_lyrics(lyrics, workspace.get("line_rows", []))
     if validation_errors:
         workspace["status"] = "validation_failed"
         workspace["errors"] = [{"error": message} for message in validation_errors[:20]]
