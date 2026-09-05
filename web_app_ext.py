@@ -138,7 +138,7 @@ def api_publish_lyrics_workspace_canonical(name):
     if not isinstance(lyrics, list) or not lyrics:
         return jsonify({"error": "No generated lyrics to publish"}), 400
     lyrics = core.normalize_converted_lyrics(lyrics)
-    validation_errors = core.validate_generated_workspace_lyrics(lyrics, workspace.get("line_rows", []))
+    validation_errors, validation_warnings = core.validate_generated_workspace_lyrics(lyrics, workspace.get("line_rows", []))
     if validation_errors:
         workspace["status"] = "validation_failed"
         workspace["errors"] = [{"error": message} for message in validation_errors[:20]]
