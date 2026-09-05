@@ -1178,6 +1178,7 @@ def normalize_workspace_generated_chunk(result, target_rows, report):
             "time": source.get("time", 0),
             "original_html": original_html,
             "translation": str(item.get("translation", source.get("translation", "")) or "").strip(),
+            "roman": str(source.get("roman", source.get("roman_or_pronunciation", "")) or "").strip(),
         }
 
     if len(result) == len(target_rows):
@@ -2218,40 +2219,63 @@ def api_use_lyrics_preview(name):
 
 @app.post("/api/lyrics-workspace/<path:name>/from-song")
 def api_seed_workspace_from_song(name):
-    """把歌库中已有歌曲的歌词作为工作源，供「下载后 AI 生成 ruby JSON」使用。"""
+    """把歌库中已有歌曲的歌词作为工作源，供「下载后 AI 生成 ruby JSON」使用。
+
+    原始逻辑会带网易云的三份歌词（原文 + 翻译 tlyric + 罗马音 romalrc），
+    下载时已按 {歌名}.lrc / {歌名}.zh.lrc / {歌名}.roma.lrc 落盘，
+    这里一并读入工作源，保证生成的歌词同时含翻译与罗马音。
+    """
     song_name = sanitize_filename(str(name).strip())
     song = get_song_or_404(song_name)
     if not song or not song.get("lyrics_path"):
         return jsonify({"error": "这首歌还没有歌词，无法生成 ruby JSON"}), 400
 
+    def companion_lrc(suffix):
+        companion = SONG_DIR / f"{song_name}{suffix}"
+        if companion.exists():
+            return companion.read_text(encoding="utf-8", errors="replace")
+        return ""
+
     if song["lyrics_path"].suffix.lower() == ".lrc":
         original_lrc = song["lyrics_path"].read_text(encoding="utf-8", errors="replace")
+        translation_lrc = companion_lrc(".zh.lrc")
+        roman_lrc = companion_lrc(".roma.lrc")
     else:
         lyrics = read_lyrics(song["lyrics_path"])
         if not isinstance(lyrics, list):
             return jsonify({"error": "歌词格式无法解析为时间轴"}), 400
-        lines = []
+        original_lines = []
+        translation_lines = []
+        roman_lines = []
         for line in lyrics:
             if not isinstance(line, dict):
                 continue
             time = round(float(line.get("time") or 0), 3)
             minutes = int(time // 60)
             seconds = time - minutes * 60
+            stamp = f"[{minutes:02d}:{seconds:05.2f}]"
             text = re.sub(r"<rt>.*?</rt>|<rp>.*?</rp>", "", str(line.get("original_html") or ""), flags=re.S)
             text = re.sub(r"<[^>]+>", "", text).strip()
-            if not text:
-                continue
-            lines.append(f"[{minutes:02d}:{seconds:05.2f}]{text}")
-        original_lrc = "\n".join(lines)
+            if text:
+                original_lines.append(f"{stamp}{text}")
+            translation = str(line.get("translation") or "").strip()
+            if translation:
+                translation_lines.append(f"{stamp}{translation}")
+            roman = str(line.get("roman") or line.get("roman_or_pronunciation") or "").strip()
+            if roman:
+                roman_lines.append(f"{stamp}{roman}")
+        original_lrc = "\n".join(original_lines)
+        translation_lrc = "\n".join(translation_lines)
+        roman_lrc = "\n".join(roman_lines)
 
     workspace = {
         "song_name": song_name,
         "artist": "",
         "source": {"provider": "netease", "song_id": "", "album": "", "duration": None},
         "original_lrc": original_lrc,
-        "translation_lrc": "",
-        "roman_lrc": "",
-        "line_rows": align_lrc_sources(original_lrc, "", ""),
+        "translation_lrc": translation_lrc,
+        "roman_lrc": roman_lrc,
+        "line_rows": align_lrc_sources(original_lrc, translation_lrc, roman_lrc),
         "generated_lyrics": [],
         "status": "draft",
         "updated_at": now_iso(),

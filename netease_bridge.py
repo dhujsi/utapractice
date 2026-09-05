@@ -138,16 +138,28 @@ def normalize_search_song(song):
     }
 
 
-def lrc_text(song_id):
+def lyrics_data(song_id):
+    """返回 (原文, 翻译, 罗马音) 三份歌词 LRC；拿不到的字段为空字符串。
+
+    网易云 /lyric 接口同时返回 lrc / tlyric / romalrc 三份歌词，
+    原逻辑只取 lrc 原文，翻译和罗马音被丢弃——这里一并取回。
+    """
     for path in ("/lyric/new", "/lyric"):
         try:
             payload = ncm_request(path, {"id": str(song_id)})
         except Exception:
             continue
-        lrc = payload.get("lrc")
-        if isinstance(lrc, dict) and str(lrc.get("lyric") or "").strip():
-            return str(lrc["lyric"])
-    return ""
+
+        def lyric_text(key):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                return str(value.get("lyric") or "").strip()
+            return ""
+
+        original = lyric_text("lrc")
+        if original:
+            return original, lyric_text("tlyric"), lyric_text("romalrc")
+    return "", "", ""
 
 
 def existing_audio_for_stem(stem):
@@ -267,12 +279,20 @@ def download_song(song_id, name, artist, level, with_lyrics):
             total = existing.stat().st_size if existing and existing.exists() else 0
 
         lyrics_saved = False
+        lyrics_translation_saved = False
+        lyrics_roman_saved = False
         lyrics_existing = any((SONG_DIR / f"{stem}{suffix}").exists() for suffix in (".json", ".lrc"))
         if with_lyrics and not lyrics_existing:
-            text = lrc_text(song_id)
-            if text.strip():
-                (SONG_DIR / f"{stem}.lrc").write_text(text, encoding="utf-8")
+            original_lrc, translation_lrc, roman_lrc = lyrics_data(song_id)
+            if original_lrc.strip():
+                (SONG_DIR / f"{stem}.lrc").write_text(original_lrc, encoding="utf-8")
                 lyrics_saved = True
+                if translation_lrc.strip():
+                    (SONG_DIR / f"{stem}.zh.lrc").write_text(translation_lrc, encoding="utf-8")
+                    lyrics_translation_saved = True
+                if roman_lrc.strip():
+                    (SONG_DIR / f"{stem}.roma.lrc").write_text(roman_lrc, encoding="utf-8")
+                    lyrics_roman_saved = True
 
         return {
             "ok": True,
@@ -281,6 +301,8 @@ def download_song(song_id, name, artist, level, with_lyrics):
             "filename": final_path.name if final_path else "",
             "bytes": total,
             "lyrics_saved": lyrics_saved,
+            "lyrics_translation_saved": lyrics_translation_saved,
+            "lyrics_roman_saved": lyrics_roman_saved,
             "lyrics_existing": lyrics_existing,
             "level": level,
             "skipped": skipped,
