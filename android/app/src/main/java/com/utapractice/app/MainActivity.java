@@ -50,6 +50,7 @@ import java.net.URL;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.UUID;
 import java.util.Iterator;
@@ -86,7 +87,9 @@ public class MainActivity extends Activity {
     private PowerManager.WakeLock loopWakeLock;
     private boolean loopKeepAliveEnabled = false;
     private String pendingImportSongName = "";
+    private String pendingImportArtist = "";
     private String pendingImportKind = "";
+    private final Map<String, Boolean> activeAudioFetches = new LinkedHashMap<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AudioManager.OnAudioFocusChangeListener audioFocusChangeListener = focusChange -> {};
     private final Runnable loopKeepAliveTick = new Runnable() {
@@ -243,9 +246,13 @@ public class MainActivity extends Activity {
         String pathAndQuery = uri.getEncodedPath() + (uri.getEncodedQuery() == null ? "" : "?" + uri.getEncodedQuery());
         String path = uri.getPath();
         if (path != null && path.startsWith("/api/netease/")) {
-            // 网易云桥接 GET 直连兜底：WebView 内直接请求 /api/netease/* 时由 Java 转发
+            // WebView 直连只可能无请求体地兜底处理 GET；APK 页面中的 POST/DELETE
+            // 由 AndroidBridge.apiRequest(method, path, body) 转发，不能伪装成 GET。
+            if (!"GET".equals(method)) {
+                return jsonResponse(405, "{\"error\":\"请通过 Android Bridge 提交网易云写请求\"}");
+            }
             try {
-                String neteaseBody = neteaseBridgeFetch("GET", pathAndQuery, null);
+                String neteaseBody = neteaseBridgeFetch(method, pathAndQuery, null);
                 return bytesResponse("application/json; charset=utf-8", neteaseBody.getBytes(StandardCharsets.UTF_8));
             } catch (Exception error) {
                 return jsonResponse(502, errorJson(error.getMessage()).toString());
@@ -416,10 +423,65 @@ public class MainActivity extends Activity {
             try {
                 String name = cleanSongName(songName);
                 if (name.isEmpty() || !audioFile(name).exists()) return "";
+                JSONObject detail = readLocalSong(name);
+                if (detail.optBoolean("remote_has_audio", false)) {
+                    String syncedVersion = detail.optString("audio_synced_version", "");
+                    String remoteVersion = detail.optString("audio_version", "");
+                    int requestedKey = Integer.parseInt(keyText == null ? "0" : keyText.trim());
+                    if (!syncedVersion.isEmpty() && !syncedVersion.equals(remoteVersion)) return "";
+                    if (!syncedVersion.isEmpty() && detail.optInt("audio_synced_key", 0) != requestedKey) return "";
+                }
                 return localAudioUrl(name);
             } catch (Exception error) {
                 return "";
             }
+        }
+
+        @JavascriptInterface
+        public void ensureAudio(String songName, String keyText) {
+            final String name = cleanSongName(songName);
+            final int key;
+            try {
+                key = Integer.parseInt(keyText == null ? "0" : keyText.trim());
+            } catch (NumberFormatException error) {
+                emitAudio("failed", name, "调号无效");
+                return;
+            }
+            if (name.isEmpty()) {
+                emitAudio("failed", name, "歌曲名不能为空");
+                return;
+            }
+            synchronized (activeAudioFetches) {
+                if (activeAudioFetches.containsKey(name)) return;
+                activeAudioFetches.put(name, true);
+            }
+            emitAudio("running", name, "正在按需下载音频…");
+            new Thread(() -> {
+                try {
+                    JSONObject detail = readLocalSong(name);
+                    if (!detail.optBoolean("remote_has_audio", false)) throw new IOException("远端没有这首歌的音频");
+                    if (!detail.optBoolean("remote_audio_playable", true)) {
+                        throw new IOException(detail.optString("remote_audio_error", "远端音频格式不支持"));
+                    }
+                    String baseUrl = serverUrl();
+                    if (baseUrl.isEmpty()) throw new IOException("请先填写同步服务器地址");
+                    String encodedName = URLEncoder.encode(name, "UTF-8").replace("+", "%20");
+                    HttpResult audio = httpGet(baseUrl + "/api/songs/" + encodedName + "/audio?key=" + key);
+                    writeFile(audioFile(name), audio.bytes);
+                    markLocalAudioPlayable(detail, audio);
+                    detail.put("audio_synced_version", detail.optString("audio_version", ""));
+                    detail.put("audio_synced_key", key);
+                    detail.put("remote_has_audio", true);
+                    upsertLocalSong(detail);
+                    emitAudio("done", name, "音频已下载，可以播放");
+                } catch (Exception error) {
+                    emitAudio("failed", name, "音频下载失败：" + error.getMessage());
+                } finally {
+                    synchronized (activeAudioFetches) {
+                        activeAudioFetches.remove(name);
+                    }
+                }
+            }).start();
         }
 
         @JavascriptInterface
@@ -434,23 +496,37 @@ public class MainActivity extends Activity {
                     String baseUrl = serverUrl();
                     if (baseUrl.isEmpty()) throw new IOException("请先填写同步服务器地址");
                     emit("sync", "running", 0, "正在读取远端歌库");
-                    byte[] listBytes = httpGetBytes(baseUrl + "/api/songs");
-                    writeFile(songsListFile(), listBytes);
-                    JSONArray songs = new JSONArray(new String(listBytes, StandardCharsets.UTF_8));
+                    byte[] manifestBytes = httpGetBytes(baseUrl + "/api/sync/manifest");
+                    JSONObject manifest = new JSONObject(new String(manifestBytes, StandardCharsets.UTF_8));
+                    JSONArray songs = manifest.optJSONArray("songs");
+                    if (songs == null) songs = new JSONArray();
                     int failed = 0;
                     List<String> failedNames = new ArrayList<>();
+                    JSONArray localSongs = localSongsListJson();
+                    ExecutorService executor = Executors.newFixedThreadPool(Math.min(3, Math.max(1, songs.length())));
+                    List<Future<String>> futures = new ArrayList<>();
                     for (int index = 0; index < songs.length(); index++) {
                         JSONObject summary = songs.optJSONObject(index);
                         if (summary == null) continue;
                         String name = summary.optString("name", "");
                         if (name.isEmpty()) continue;
-                        int progress = Math.round(index * 100f / Math.max(songs.length(), 1));
-                        emit("sync", "running", progress, "同步 " + (index + 1) + "/" + songs.length() + "：" + name);
+                        JSONObject localSummary = findLocalSongSummary(localSongs, name);
+                        futures.add(executor.submit(() -> {
+                            syncSong(baseUrl, summary, localSummary);
+                            return name;
+                        }));
+                    }
+                    executor.shutdown();
+                    int completed = 0;
+                    for (Future<String> future : futures) {
                         try {
-                            syncSong(baseUrl, name);
+                            String name = future.get();
+                            completed += 1;
+                            emit("sync", "running", Math.round(completed * 100f / Math.max(futures.size(), 1)), "同步 " + completed + "/" + futures.size() + "：" + name);
                         } catch (Exception error) {
                             failed += 1;
-                            failedNames.add(name + "：" + error.getMessage());
+                            Throwable cause = error.getCause() == null ? error : error.getCause();
+                            failedNames.add("同步失败：" + (cause.getMessage() == null ? "未知错误" : cause.getMessage()));
                         }
                     }
                     prefs.edit().putString(KEY_LAST_SYNC, String.valueOf(System.currentTimeMillis())).apply();
@@ -466,12 +542,17 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void chooseAudioForSong(String songName) {
-            openImportPicker("audio", cleanSongName(songName), REQUEST_IMPORT_AUDIO, "audio/*");
+            openImportPicker("audio", cleanSongName(songName), "", REQUEST_IMPORT_AUDIO, "audio/*");
         }
 
         @JavascriptInterface
         public void chooseLyricsForSong(String songName) {
-            openImportPicker("lyrics", cleanSongName(songName), REQUEST_IMPORT_LYRICS, "*/*");
+            chooseLyricsForSong(songName, "");
+        }
+
+        @JavascriptInterface
+        public void chooseLyricsForSong(String songName, String artist) {
+            openImportPicker("lyrics", cleanSongName(songName), artist, REQUEST_IMPORT_LYRICS, "*/*");
         }
     }
 
@@ -510,6 +591,10 @@ public class MainActivity extends Activity {
             String name = Uri.decode(path.substring(songPrefix.length(), path.length() - "/lyrics".length()));
             return handleLyricsPost(name, new JSONArray(emptyJsonArray(body)));
         }
+        if (path.startsWith(songPrefix) && path.endsWith("/rename")) {
+            String name = Uri.decode(path.substring(songPrefix.length(), path.length() - "/rename".length()));
+            return handleRenamePost(name, new JSONObject(emptyJsonObject(body)));
+        }
         if (path.startsWith(songPrefix) && path.endsWith("/delete")) {
             String name = Uri.decode(path.substring(songPrefix.length(), path.length() - "/delete".length()));
             return handleDeletePost(name);
@@ -536,6 +621,10 @@ public class MainActivity extends Activity {
             String jobId = Uri.decode(path.substring("/api/convert-jobs/".length(), path.length() - "/stop".length()));
             return handleConvertJobStop(jobId);
         }
+        if (path.startsWith("/api/convert-jobs/") && path.endsWith("/retry")) {
+            String jobId = Uri.decode(path.substring("/api/convert-jobs/".length(), path.length() - "/retry".length()));
+            return handleConvertJobRetry(jobId);
+        }
         if (path.startsWith("/api/lyrics-align/")) {
             String name = Uri.decode(path.substring("/api/lyrics-align/".length()));
             return handleWorkspaceAlignPost(name);
@@ -543,10 +632,6 @@ public class MainActivity extends Activity {
         if (path.startsWith("/api/lyrics-workspace/") && path.endsWith("/use-preview")) {
             String name = Uri.decode(path.substring("/api/lyrics-workspace/".length(), path.length() - "/use-preview".length()));
             return handleWorkspaceUsePreviewPost(name, new JSONObject(emptyJsonObject(body)));
-        }
-        if (path.startsWith("/api/lyrics-workspace/") && path.endsWith("/publish")) {
-            String name = Uri.decode(path.substring("/api/lyrics-workspace/".length(), path.length() - "/publish".length()));
-            return handleWorkspacePublishPost(name);
         }
         if (path.startsWith("/api/lyrics-workspace/")) {
             String name = Uri.decode(path.substring("/api/lyrics-workspace/".length()));
@@ -567,16 +652,19 @@ public class MainActivity extends Activity {
                 || path.startsWith("/api/lyrics-workspace/")
                 || path.startsWith("/api/lyrics-align/")
                 || path.startsWith("/api/convert-jobs/") && path.endsWith("/stop")
+                || path.startsWith("/api/convert-jobs/") && path.endsWith("/retry")
                 || path.startsWith(songPrefix) && (
                     path.endsWith("/meta")
                         || path.endsWith("/lyrics")
+                        || path.endsWith("/rename")
                         || path.endsWith("/delete")
                 )
         );
     }
 
     private boolean isLocalDeletePath(String path) {
-        return path != null && path.startsWith("/api/convert-jobs/") && !path.endsWith("/stop");
+        return path != null && path.startsWith("/api/convert-jobs/")
+            && !path.endsWith("/stop") && !path.endsWith("/retry");
     }
 
     private String proxyJsonRequest(String method, String path, String body) throws IOException {
@@ -1073,35 +1161,11 @@ public class MainActivity extends Activity {
         return workspace;
     }
 
-    private JSONObject handleWorkspacePublishPost(String name) throws Exception {
-        JSONObject workspace = readJsonObject(workspaceFile(name));
-        if (workspace.length() == 0) throw new IOException("Lyrics workspace not found");
-        JSONArray lyrics = workspace.optJSONArray("generated_lyrics");
-        if (lyrics == null || lyrics.length() == 0) throw new IOException("No generated lyrics to publish");
-
-        JSONObject detail = readLocalSong(cleanSongName(name));
-        detail.put("lyrics", lyrics);
-        detail.put("has_lyrics", true);
-        detail.put("lyrics_type", "json");
-        upsertLocalSong(detail);
-
-        workspace.put("status", "published");
-        workspace.put("updated_at", nowText());
-        writeJsonObject(workspaceFile(name), workspace);
-
-        JSONObject result = new JSONObject();
-        result.put("ok", true);
-        result.put("song_name", cleanSongName(name));
-        result.put("published_count", lyrics.length());
-        result.put("lyrics_count", lyrics.length());
-        return result;
-    }
-
     private JSONObject handleConvertJobPost(JSONObject payload) throws Exception {
         String songName = cleanSongName(payload.optString("song_name", ""));
-        String type = payload.optString("type", payload.optString("job_type", "convert_lyrics"));
+        String type = payload.optString("type", payload.optString("job_type", "generate_ruby_from_rows"));
         if (songName.isEmpty()) throw new IOException("Song name is required");
-        if (!"generate_ruby_from_rows".equals(type)) throw new IOException("APK 本地模式只支持工作源 ruby 生成");
+        if (!"generate_ruby_from_rows".equals(type)) throw new IOException("旧歌词生成流程已停用");
         if (!workspaceFile(songName).exists()) throw new IOException("Lyrics workspace not found");
         if (readLocalSettings().optString("api_key", "").trim().isEmpty()) throw new IOException("API key is not configured");
 
@@ -1131,6 +1195,35 @@ public class MainActivity extends Activity {
         job.put("message", "任务已停止");
         job.put("updated_at", nowText());
         saveJob(job);
+        return publicJob(job);
+    }
+
+    private JSONObject handleConvertJobRetry(String jobId) throws Exception {
+        JSONObject job = readJobsJson().optJSONObject(jobId);
+        if (job == null) throw new IOException("Job not found");
+        if (!"failed".equals(job.optString("status", "")) && !"stopped".equals(job.optString("status", ""))) {
+            throw new IOException("Only failed or stopped jobs can be retried");
+        }
+        if (job.optJSONObject("payload") == null) throw new IOException("Job payload is missing, cannot retry");
+        if (!"generate_ruby_from_rows".equals(job.optString("type", ""))) {
+            throw new IOException("该历史任务使用的旧生成流程已停用，请重新生成");
+        }
+        String songName = cleanSongName(job.optString("song_name", ""));
+        if (songName.isEmpty()) throw new IOException("Song name is required");
+        if (!workspaceFile(songName).exists()) throw new IOException("Lyrics workspace not found");
+        if (readLocalSettings().optString("api_key", "").trim().isEmpty()) throw new IOException("API key is not configured");
+        job.put("status", "queued");
+        job.put("progress", 0);
+        job.remove("error");
+        job.remove("result");
+        job.remove("finished_at");
+        job.put("stop_requested", false);
+        String message = "任务已重新加入后台队列（重试）";
+        job.put("message", message);
+        job.put("steps", new JSONArray().put(step(message)));
+        job.put("updated_at", nowText());
+        saveJob(job);
+        startLocalRubyJob(jobId, songName);
         return publicJob(job);
     }
 
@@ -1198,6 +1291,13 @@ public class MainActivity extends Activity {
         workspace.put("errors", new JSONArray());
         workspace.put("updated_at", nowText());
         writeJsonObject(workspaceFile(songName), workspace);
+
+        // 生成结果就是正式歌库数据；workspace 只保留任务状态和可回看结果。
+        JSONObject detail = readLocalSong(cleanSongName(songName));
+        detail.put("lyrics", generated);
+        detail.put("has_lyrics", true);
+        detail.put("lyrics_type", "json");
+        upsertLocalSong(detail);
     }
 
     private JSONArray generateRubyChunk(JSONObject settings, JSONObject workspace, JSONArray rows, int chunkNumber, int totalChunks) throws Exception {
@@ -1260,6 +1360,7 @@ public class MainActivity extends Activity {
             if (originalHtml.trim().isEmpty()) originalHtml = source.optString("original", "");
             line.put("original_html", originalHtml);
             line.put("translation", item == null ? source.optString("translation", "") : item.optString("translation", source.optString("translation", "")));
+            line.put("roman", source.optString("roman", ""));
             normalized.put(line);
         }
         return normalized;
@@ -1306,28 +1407,122 @@ public class MainActivity extends Activity {
         if (!"lrc".equals(lyricsType) && !"json".equals(lyricsType)) throw new IOException("Lyrics type must be lrc or json");
 
         JSONObject detail = readLocalSong(songName);
-        if (targetSong.length() > 0 && !detail.optBoolean("has_audio", false)) {
+        if (targetSong.length() > 0 && !detail.optBoolean("has_audio", false) && !detail.optBoolean("remote_has_audio", false)) {
             throw new IOException("Target song has no audio");
         }
         if (detail.optBoolean("has_lyrics", false)) {
             throw new IOException("Target song already has lyrics");
         }
 
-        JSONArray lyrics = "json".equals(lyricsType) ? new JSONArray(lyricsText) : parseLrc(lyricsText);
+        JSONObject importedDocument = null;
+        JSONArray lyrics;
+        if ("json".equals(lyricsType)) {
+            if (lyricsText.startsWith("[")) {
+                lyrics = new JSONArray(lyricsText);
+            } else {
+                importedDocument = new JSONObject(lyricsText);
+                lyrics = importedDocument.optJSONArray("lyrics");
+                if (lyrics == null) throw new IOException("JSON lyrics document must contain a lyrics array");
+            }
+            applyImportedMetadata(detail, importedDocument, "");
+        } else {
+            lyrics = parseLrc(lyricsText);
+        }
         if (!"json".equals(lyricsType) && lyrics.length() == 0) {
             throw new IOException("LRC lyrics must include timestamped lines");
         }
+        if (payload.has("title") || (targetSong.isEmpty() && importedDocument == null)) {
+            detail.put("title", payload.optString("title", songName));
+        }
+        applyExplicitMetadata(detail, payload.optString("artist", ""), payload.optString("album", ""), payload.optJSONObject("source"));
         detail.put("lyrics", lyrics);
         detail.put("has_lyrics", true);
-        detail.put("lyrics_type", lyricsType);
+        detail.put("lyrics_type", "json");
         upsertLocalSong(detail);
 
         JSONObject result = new JSONObject();
         result.put("ok", true);
         result.put("song_name", songName);
-        result.put("saved", songName + "." + lyricsType);
+        result.put("saved", songName + ".json");
         result.put("lines", lyrics.length());
         return result;
+    }
+
+    private JSONObject handleRenamePost(String name, JSONObject payload) throws Exception {
+        String oldName = cleanSongName(name);
+        String newName = cleanSongName(payload.optString("new_name", ""));
+        if (oldName.isEmpty() || newName.isEmpty()) throw new IOException("新歌名不能为空");
+        if (oldName.equals(newName)) {
+            return new JSONObject().put("ok", true).put("renamed", false).put("song_name", oldName);
+        }
+        JSONArray existingSongs = localSongsListJson();
+        for (int index = 0; index < existingSongs.length(); index++) {
+            JSONObject existing = existingSongs.optJSONObject(index);
+            String existingName = existing == null ? "" : existing.optString("name", "");
+            if (!oldName.equals(existingName) && newName.equalsIgnoreCase(existingName)) {
+                throw new IOException("歌库里已经有同名歌曲");
+            }
+        }
+        if (songJsonFile(newName).exists() || audioFile(newName).exists()
+                || audioMimeSidecar(newName).exists() || workspaceFile(newName).exists()) {
+            throw new IOException("歌库里已经有同名歌曲");
+        }
+
+        JSONObject detail = readLocalSong(oldName);
+        copyLocalFile(audioFile(oldName), audioFile(newName));
+        copyLocalFile(audioMimeSidecar(oldName), audioMimeSidecar(newName));
+        copyLocalFile(workspaceFile(oldName), workspaceFile(newName));
+        detail.put("name", newName);
+        writeText(songJsonFile(newName), detail.toString());
+
+        JSONObject workspace = readJsonObject(workspaceFile(newName));
+        if (workspace.length() > 0) {
+            workspace.put("song_name", newName);
+            workspace.put("updated_at", nowText());
+            writeJsonObject(workspaceFile(newName), workspace);
+        }
+
+        JSONArray songs = localSongsListJson();
+        JSONArray next = new JSONArray();
+        for (int index = 0; index < songs.length(); index++) {
+            JSONObject summary = songs.optJSONObject(index);
+            if (summary == null) continue;
+            if (oldName.equals(summary.optString("name", ""))) {
+                next.put(songSummary(detail));
+            } else {
+                next.put(summary);
+            }
+        }
+        writeSongsListJson(next);
+        renameJobSong(oldName, newName);
+
+        deleteIfExists(songJsonFile(oldName));
+        deleteIfExists(audioFile(oldName));
+        deleteIfExists(audioMimeSidecar(oldName));
+        deleteIfExists(workspaceFile(oldName));
+        return new JSONObject().put("ok", true).put("renamed", true).put("old_name", oldName).put("song_name", newName);
+    }
+
+    private void copyLocalFile(File source, File target) throws IOException {
+        if (!source.exists()) return;
+        try (InputStream input = new FileInputStream(source)) {
+            writeStream(target, input);
+        }
+    }
+
+    private synchronized void renameJobSong(String oldName, String newName) throws Exception {
+        JSONObject jobs = readJobsJson();
+        boolean changed = false;
+        Iterator<String> keys = jobs.keys();
+        while (keys.hasNext()) {
+            JSONObject job = jobs.optJSONObject(keys.next());
+            if (job == null || !oldName.equals(job.optString("song_name", ""))) continue;
+            job.put("song_name", newName);
+            JSONObject payload = job.optJSONObject("payload");
+            if (payload != null) payload.put("song_name", newName);
+            changed = true;
+        }
+        if (changed) writeJobsJson(jobs);
     }
 
     private JSONObject handleDeletePost(String name) throws Exception {
@@ -1336,6 +1531,7 @@ public class MainActivity extends Activity {
         deleteIfExists(songJsonFile(songName));
         deleteIfExists(audioFile(songName));
         deleteIfExists(audioMimeSidecar(songName));
+        deleteIfExists(workspaceFile(songName));
 
         JSONArray songs = localSongsListJson();
         JSONArray next = new JSONArray();
@@ -1350,9 +1546,10 @@ public class MainActivity extends Activity {
         return result;
     }
 
-    private void openImportPicker(String kind, String songName, int requestCode, String mimeType) {
+    private void openImportPicker(String kind, String songName, String artist, int requestCode, String mimeType) {
         pendingImportKind = kind;
         pendingImportSongName = songName;
+        pendingImportArtist = artist == null ? "" : artist.trim();
         runOnUiThread(() -> {
             try {
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -1376,10 +1573,10 @@ public class MainActivity extends Activity {
             emitImport(kind, "cancelled", "已取消选择");
             return;
         }
-        handlePickedImportFile(kind, data.getData(), pendingImportSongName);
+        handlePickedImportFile(kind, data.getData(), pendingImportSongName, pendingImportArtist);
     }
 
-    private void handlePickedImportFile(String kind, Uri uri, String requestedSongName) {
+    private void handlePickedImportFile(String kind, Uri uri, String requestedSongName, String requestedArtist) {
         new Thread(() -> {
             try {
                 String displayName = displayNameForUri(uri);
@@ -1391,7 +1588,7 @@ public class MainActivity extends Activity {
                 if ("audio".equals(kind)) {
                     importAudioUri(uri, songName);
                 } else {
-                    importLyricsUri(uri, songName, displayName);
+                    importLyricsUri(uri, songName, displayName, requestedArtist);
                 }
                 emitImport(kind, "done", "已导入：" + songName, songName);
             } catch (Exception error) {
@@ -1418,7 +1615,7 @@ public class MainActivity extends Activity {
         upsertLocalSong(detail);
     }
 
-    private void importLyricsUri(Uri uri, String songName, String displayName) throws Exception {
+    private void importLyricsUri(Uri uri, String songName, String displayName, String requestedArtist) throws Exception {
         JSONObject detail = readLocalSong(songName);
         if (detail.optBoolean("has_lyrics", false)) throw new IOException("Target song already has lyrics");
         String raw;
@@ -1428,14 +1625,66 @@ public class MainActivity extends Activity {
         }
         String lowerName = displayName == null ? "" : displayName.toLowerCase();
         String lyricsType = lowerName.endsWith(".json") ? "json" : "lrc";
-        JSONArray lyrics = "json".equals(lyricsType) ? new JSONArray(raw) : parseLrc(raw);
+        JSONObject importedDocument = null;
+        JSONArray lyrics;
+        if ("json".equals(lyricsType)) {
+            if (raw.startsWith("[")) {
+                lyrics = new JSONArray(raw);
+            } else {
+                importedDocument = new JSONObject(raw);
+                lyrics = importedDocument.optJSONArray("lyrics");
+                if (lyrics == null) throw new IOException("JSON lyrics document must contain a lyrics array");
+            }
+            applyImportedMetadata(detail, importedDocument, requestedArtist);
+        } else {
+            lyrics = parseLrc(raw);
+            applyExplicitMetadata(detail, requestedArtist, "", null);
+        }
         if (!"json".equals(lyricsType) && lyrics.length() == 0) {
             throw new IOException("LRC lyrics must include timestamped lines");
         }
         detail.put("lyrics", lyrics);
         detail.put("has_lyrics", true);
-        detail.put("lyrics_type", lyricsType);
+        detail.put("lyrics_type", "json");
         upsertLocalSong(detail);
+    }
+
+    private void applyImportedMetadata(JSONObject detail, JSONObject imported, String requestedArtist) throws Exception {
+        if (imported != null) {
+            String importedTitle = imported.optString("title", "").trim();
+            if (!importedTitle.isEmpty() && detail.optString("title", "").equals(detail.optString("name", ""))) {
+                detail.put("title", importedTitle);
+            }
+            if (detail.optString("album", "").trim().isEmpty() && imported.has("album")) {
+                detail.put("album", imported.optString("album", ""));
+            }
+            if (imported.optJSONObject("source") != null) detail.put("source", imported.optJSONObject("source"));
+            String importedArtist = imported.optString("artist", "").trim();
+            JSONArray importedArtists = imported.optJSONArray("artists");
+            boolean hasArtist = !detail.optString("artist", "").trim().isEmpty()
+                || (detail.optJSONArray("artists") != null && detail.optJSONArray("artists").length() > 0);
+            if (!hasArtist && importedArtists != null && importedArtists.length() > 0) {
+                detail.put("artists", importedArtists);
+                if (importedArtist.isEmpty()) importedArtist = joinArtistNames(importedArtists);
+                detail.put("artist", importedArtist);
+            } else if (!hasArtist && !importedArtist.isEmpty()) {
+                applyExplicitMetadata(detail, importedArtist, "", null);
+            }
+        }
+        if (requestedArtist != null && !requestedArtist.trim().isEmpty()) {
+            applyExplicitMetadata(detail, requestedArtist, "", null);
+        }
+    }
+
+    private void applyExplicitMetadata(JSONObject detail, String artist, String album, JSONObject source) throws Exception {
+        String cleanArtist = artist == null ? "" : artist.trim();
+        if (!cleanArtist.isEmpty()) {
+            JSONArray artists = new JSONArray().put(cleanArtist);
+            detail.put("artists", artists);
+            detail.put("artist", cleanArtist);
+        }
+        if (album != null && !album.trim().isEmpty()) detail.put("album", album.trim());
+        if (source != null) detail.put("source", source);
     }
 
     private JSONObject errorJson(String message) {
@@ -1702,12 +1951,29 @@ public class MainActivity extends Activity {
         JSONObject detail;
         if (file.exists()) {
             try (InputStream input = new FileInputStream(file)) {
-                detail = new JSONObject(new String(readAll(input), StandardCharsets.UTF_8));
+                String raw = new String(readAll(input), StandardCharsets.UTF_8).trim();
+                if (raw.startsWith("[")) {
+                    detail = new JSONObject();
+                    detail.put("lyrics", new JSONArray(raw));
+                } else {
+                    detail = new JSONObject(raw);
+                }
             }
         } else {
             detail = new JSONObject();
         }
         detail.put("name", name);
+        if (!detail.has("title") || detail.optString("title", "").trim().isEmpty()) detail.put("title", name);
+        if (!detail.has("artists")) {
+            JSONArray artists = new JSONArray();
+            String artist = detail.optString("artist", "").trim();
+            if (!artist.isEmpty()) artists.put(artist);
+            detail.put("artists", artists);
+        }
+        if (!detail.has("artist")) detail.put("artist", joinArtistNames(detail.optJSONArray("artists")));
+        if (!detail.has("album")) detail.put("album", "");
+        if (!detail.has("source")) detail.put("source", new JSONObject());
+        if (!detail.has("schema_version")) detail.put("schema_version", 1);
         if (!detail.has("lyrics")) detail.put("lyrics", new JSONArray());
         if (!detail.has("learned")) detail.put("learned", false);
         if (!detail.has("range")) detail.put("range", "");
@@ -1720,10 +1986,16 @@ public class MainActivity extends Activity {
         return detail;
     }
 
-    private void upsertLocalSong(JSONObject detail) throws Exception {
+    private synchronized void upsertLocalSong(JSONObject detail) throws Exception {
         String name = cleanSongName(detail.optString("name", ""));
         if (name.isEmpty()) throw new IOException("Song name is required");
         detail.put("name", name);
+        if (!detail.has("title") || detail.optString("title", "").trim().isEmpty()) detail.put("title", name);
+        if (!detail.has("artists")) detail.put("artists", new JSONArray());
+        if (!detail.has("artist")) detail.put("artist", joinArtistNames(detail.optJSONArray("artists")));
+        if (!detail.has("album")) detail.put("album", "");
+        if (!detail.has("source")) detail.put("source", new JSONObject());
+        detail.put("schema_version", 1);
         detail.put("has_audio", detail.optBoolean("has_audio", false) || audioFile(name).exists());
         if (detail.optBoolean("has_audio", false) && !detail.has("audio_playable")) detail.put("audio_playable", true);
         if (!detail.has("audio_error")) detail.put("audio_error", "");
@@ -1754,6 +2026,12 @@ public class MainActivity extends Activity {
     private JSONObject songSummary(JSONObject detail) throws Exception {
         JSONObject summary = new JSONObject();
         summary.put("name", detail.optString("name", ""));
+        summary.put("title", detail.optString("title", detail.optString("name", "")));
+        summary.put("artists", detail.optJSONArray("artists") == null ? new JSONArray() : detail.optJSONArray("artists"));
+        summary.put("artist", detail.optString("artist", ""));
+        summary.put("album", detail.optString("album", ""));
+        summary.put("source", detail.optJSONObject("source") == null ? new JSONObject() : detail.optJSONObject("source"));
+        summary.put("schema_version", detail.optInt("schema_version", 1));
         summary.put("has_audio", detail.optBoolean("has_audio", false));
         summary.put("audio_playable", detail.optBoolean("audio_playable", true));
         summary.put("audio_error", detail.optString("audio_error", ""));
@@ -1764,6 +2042,13 @@ public class MainActivity extends Activity {
         summary.put("learned", detail.optBoolean("learned", false));
         summary.put("range", detail.optString("range", ""));
         summary.put("saved_key", detail.optInt("saved_key", 0));
+        summary.put("document_version", detail.optString("document_version", ""));
+        summary.put("audio_version", detail.optString("audio_version", ""));
+        summary.put("audio_synced_version", detail.optString("audio_synced_version", ""));
+        summary.put("audio_synced_key", detail.optInt("audio_synced_key", 0));
+        summary.put("remote_has_audio", detail.optBoolean("remote_has_audio", false));
+        summary.put("remote_audio_playable", detail.optBoolean("remote_audio_playable", false));
+        summary.put("remote_audio_error", detail.optString("remote_audio_error", ""));
         return summary;
     }
 
@@ -1959,11 +2244,14 @@ public class MainActivity extends Activity {
     }
 
     private String cleanSongName(String value) {
-        String text = value == null ? "" : value.trim();
-        text = text.replace('\r', ' ').replace('\n', ' ').replace('\t', ' ');
-        text = text.replace('/', '／').replace('\\', '＼');
-        while (text.contains("  ")) text = text.replace("  ", " ");
-        return text.trim();
+        String text = Normalizer.normalize(value == null ? "" : value, Normalizer.Form.NFKC).trim();
+        text = text.replaceAll("[\\\\/*?:\"<>|\\x00-\\x1f\\x7f]", "_");
+        text = text.replaceAll("\\s+", " ").replaceAll("^[ .]+|[ .]+$", "");
+        if (text.length() > 180) text = text.substring(0, 180);
+        for (int index = 0; index < text.length(); index++) {
+            if (Character.isLetterOrDigit(text.charAt(index))) return text;
+        }
+        return "";
     }
 
     private void deleteIfExists(File file) throws IOException {
@@ -2005,27 +2293,52 @@ public class MainActivity extends Activity {
         return jsonResponse(415, errorJson(detail.optString("audio_error", "音频格式不支持")).toString());
     }
 
-    private void syncSong(String baseUrl, String name) throws Exception {
+    private JSONObject findLocalSongSummary(JSONArray songs, String name) {
+        for (int index = 0; index < songs.length(); index++) {
+            JSONObject song = songs.optJSONObject(index);
+            if (song != null && name.equals(song.optString("name", ""))) return song;
+        }
+        return null;
+    }
+
+    private boolean sameVersion(JSONObject local, JSONObject remote, String field) {
+        String localValue = local == null ? "" : local.optString(field, "");
+        String remoteValue = remote == null ? "" : remote.optString(field, "");
+        return !remoteValue.isEmpty() && remoteValue.equals(localValue);
+    }
+
+    private void copySongMetadata(JSONObject target, JSONObject source) throws Exception {
+        for (String key : new String[]{"title", "artists", "artist", "album", "source", "schema_version", "document_version", "audio_version", "saved_key", "range", "learned"}) {
+            if (source.has(key)) target.put(key, source.opt(key));
+        }
+    }
+
+    private void syncSong(String baseUrl, JSONObject summary, JSONObject localSummary) throws Exception {
+        String name = summary.optString("name", "");
+        if (name.isEmpty()) throw new IOException("远端歌曲缺少名称");
         String encodedName = URLEncoder.encode(name, "UTF-8").replace("+", "%20");
-        byte[] songBytes = httpGetBytes(baseUrl + "/api/songs/" + encodedName);
-        JSONObject song = new JSONObject(new String(songBytes, StandardCharsets.UTF_8));
-        if (!song.optBoolean("has_audio", false)) {
-            deleteIfExists(audioFile(name));
-            deleteIfExists(audioMimeSidecar(name));
-            upsertLocalSong(song);
-            return;
+        File localFile = songJsonFile(name);
+        JSONObject song;
+        boolean needsDocument = !localFile.exists() || !sameVersion(localSummary, summary, "document_version");
+        if (needsDocument) {
+            byte[] songBytes = httpGetBytes(baseUrl + "/api/songs/" + encodedName);
+            song = new JSONObject(new String(songBytes, StandardCharsets.UTF_8));
+        } else {
+            song = readLocalSong(name);
         }
-        if (!song.optBoolean("audio_playable", true)) {
-            deleteIfExists(audioFile(name));
-            deleteIfExists(audioMimeSidecar(name));
-            upsertLocalSong(song);
-            return;
-        }
-        int key = song.optInt("saved_key", 0);
-        HttpResult audio = httpGet(baseUrl + "/api/songs/" + encodedName + "/audio?key=" + key);
-        writeFile(audioFile(name), audio.bytes);
-        markLocalAudioPlayable(song, audio);
-        writeText(audioMimeSidecar(name), song.optString("audio_mime", "audio/mpeg"));
+        copySongMetadata(song, summary);
+
+        boolean remoteHasAudio = summary.optBoolean("has_audio", false);
+        // Audio is deliberately deferred.  The manifest/detail pass stays
+        // small; the first playback request downloads this song only.
+        boolean localHasAudio = audioFile(name).exists();
+        song.put("has_audio", localHasAudio);
+        song.put("audio_playable", localHasAudio ? song.optBoolean("audio_playable", true) : false);
+        song.put("audio_error", localHasAudio ? song.optString("audio_error", "") : summary.optString("audio_error", ""));
+        song.put("audio_synced_version", localHasAudio && localSummary != null ? localSummary.optString("audio_synced_version", "") : "");
+        song.put("remote_has_audio", remoteHasAudio);
+        song.put("remote_audio_playable", summary.optBoolean("audio_playable", true));
+        song.put("remote_audio_error", summary.optString("audio_error", ""));
         upsertLocalSong(song);
     }
 
@@ -2037,6 +2350,20 @@ public class MainActivity extends Activity {
             detail.put("progress", progress);
             detail.put("message", message);
             if ("cloud".equals(channel) && "done".equals(status)) detail.put("serverUrl", message);
+            String script = "window.dispatchEvent(new CustomEvent('utapractice-android', { detail: " + detail + " }));";
+            runOnUiThread(() -> webView.evaluateJavascript(script, null));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void emitAudio(String status, String songName, String message) {
+        try {
+            JSONObject detail = new JSONObject();
+            detail.put("channel", "audio");
+            detail.put("status", status);
+            detail.put("progress", "done".equals(status) ? 100 : 0);
+            detail.put("song_name", songName == null ? "" : songName);
+            detail.put("message", message);
             String script = "window.dispatchEvent(new CustomEvent('utapractice-android', { detail: " + detail + " }));";
             runOnUiThread(() -> webView.evaluateJavascript(script, null));
         } catch (Exception ignored) {
@@ -2393,21 +2720,56 @@ public class MainActivity extends Activity {
         return Base64.encodeToString(value.getBytes(StandardCharsets.UTF_8), Base64.URL_SAFE | Base64.NO_WRAP);
     }
 
-    private void writeFile(File file, byte[] bytes) throws IOException {
+    private synchronized void writeFile(File file, byte[] bytes) throws IOException {
         File parent = file.getParentFile();
         if (parent != null && !parent.exists()) parent.mkdirs();
-        try (FileOutputStream output = new FileOutputStream(file)) {
-            output.write(bytes);
+        File temporary = temporarySibling(file);
+        try {
+            try (FileOutputStream output = new FileOutputStream(temporary)) {
+                output.write(bytes);
+                output.flush();
+                output.getFD().sync();
+            }
+            replaceFile(temporary, file);
+        } finally {
+            if (temporary.exists()) temporary.delete();
         }
     }
 
-    private void writeStream(File file, InputStream input) throws IOException {
+    private synchronized void writeStream(File file, InputStream input) throws IOException {
         File parent = file.getParentFile();
         if (parent != null && !parent.exists()) parent.mkdirs();
-        try (FileOutputStream output = new FileOutputStream(file)) {
-            byte[] buffer = new byte[8192];
-            int count;
-            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+        File temporary = temporarySibling(file);
+        try {
+            try (FileOutputStream output = new FileOutputStream(temporary)) {
+                byte[] buffer = new byte[8192];
+                int count;
+                while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+                output.flush();
+                output.getFD().sync();
+            }
+            replaceFile(temporary, file);
+        } finally {
+            if (temporary.exists()) temporary.delete();
+        }
+    }
+
+    private File temporarySibling(File file) {
+        return new File(file.getParentFile(), "." + file.getName() + "." + UUID.randomUUID() + ".tmp");
+    }
+
+    private void replaceFile(File temporary, File target) throws IOException {
+        File backup = new File(target.getParentFile(), "." + target.getName() + "." + UUID.randomUUID() + ".bak");
+        boolean hadTarget = target.exists();
+        try {
+            if (hadTarget && !target.renameTo(backup)) throw new IOException("无法暂存旧文件：" + target.getName());
+            if (!temporary.renameTo(target)) {
+                if (hadTarget) backup.renameTo(target);
+                throw new IOException("无法写入本地文件：" + target.getName());
+            }
+            if (hadTarget && backup.exists() && !backup.delete()) backup.deleteOnExit();
+        } finally {
+            if (temporary.exists()) temporary.delete();
         }
     }
 

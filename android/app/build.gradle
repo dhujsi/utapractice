@@ -10,8 +10,8 @@ android {
         applicationId "com.utapractice.app"
         minSdk 24
         targetSdk 34
-        versionCode 7
-        versionName "0.1.6"
+        versionCode 9
+        versionName "0.1.8"
     }
 
     sourceSets {
@@ -28,7 +28,7 @@ tasks.register("syncWebAppAssets", Copy) {
     }
     from("../../web_static") {
         into "web_static"
-        include "app.css", "app.js", "manifest.webmanifest"
+        include "app.css", "netease.css", "app.js", "netease.js", "manifest.webmanifest"
     }
 }
 

@@ -4,11 +4,13 @@ const state = {
   current: null,
   lyrics: [],
   filter: "all",
+  libraryQuery: "",
   displayMode: "both",
   align: "center",
   activeLine: null,
   showRuby: true,
   ab: { a: null, b: null },
+  renameTarget: null,
   workspace: {
     results: [],
     selectedResult: null,
@@ -23,6 +25,7 @@ const els = {
   libraryView: document.getElementById("libraryView"),
   libraryList: document.getElementById("libraryList"),
   libraryViewStatus: document.getElementById("libraryViewStatus"),
+  librarySearchInput: document.getElementById("librarySearchInput"),
   addSongButton: document.getElementById("addSongButton"),
   addLyricsButton: document.getElementById("addLyricsButton"),
   audioImportPanel: document.getElementById("audioImportPanel"),
@@ -39,6 +42,7 @@ const els = {
   keyField: document.getElementById("keyField"),
   keySlider: document.getElementById("keySlider"),
   keyOutput: document.getElementById("keyOutput"),
+  keySummaryValue: document.getElementById("keySummaryValue"),
   saveKey: document.getElementById("saveKey"),
   resetKey: document.getElementById("resetKey"),
   displayMode: document.getElementById("displayMode"),
@@ -50,6 +54,9 @@ const els = {
   searchView: document.getElementById("searchView"),
   lyrics: document.getElementById("lyrics"),
   emptyState: document.getElementById("emptyState"),
+  practiceHeader: document.getElementById("practiceHeader"),
+  practiceSongTitle: document.getElementById("practiceSongTitle"),
+  practiceSongStatus: document.getElementById("practiceSongStatus"),
   controls: document.getElementById("controls"),
   audio: document.getElementById("audio"),
   floatingControls: document.getElementById("floatingControls"),
@@ -69,12 +76,22 @@ const els = {
   lyricsEditor: document.getElementById("lyricsEditor"),
   saveLyrics: document.getElementById("saveLyrics"),
   editorError: document.getElementById("editorError"),
+  renameDialog: document.getElementById("renameDialog"),
+  renameSongInput: document.getElementById("renameSongInput"),
+  renameError: document.getElementById("renameError"),
+  confirmRename: document.getElementById("confirmRename"),
+  confirmDialog: document.getElementById("confirmDialog"),
+  confirmDialogTitle: document.getElementById("confirmDialogTitle"),
+  confirmDialogMessage: document.getElementById("confirmDialogMessage"),
+  confirmDialogAction: document.getElementById("confirmDialogAction"),
   audioUploadInput: document.getElementById("audioUploadInput"),
   audioTargetSongSelect: document.getElementById("audioTargetSongSelect"),
   audioUploadButton: document.getElementById("audioUploadButton"),
   audioUploadStatus: document.getElementById("audioUploadStatus"),
   lyricsTargetSongSelect: document.getElementById("lyricsTargetSongSelect"),
   lyricsSongNameInput: document.getElementById("lyricsSongNameInput"),
+  lyricsArtistInput: document.getElementById("lyricsArtistInput"),
+  lyricsAlbumInput: document.getElementById("lyricsAlbumInput"),
   lyricsUploadInput: document.getElementById("lyricsUploadInput"),
   lyricsUploadButton: document.getElementById("lyricsUploadButton"),
   lyricsUploadStatus: document.getElementById("lyricsUploadStatus"),
@@ -83,6 +100,7 @@ const els = {
   saveLyricsText: document.getElementById("saveLyricsText"),
   lyricsTextStatus: document.getElementById("lyricsTextStatus"),
   baseUrlInput: document.getElementById("baseUrlInput"),
+  aiSettingsForm: document.getElementById("aiSettingsForm"),
   apiKeyInput: document.getElementById("apiKeyInput"),
   modelInput: document.getElementById("modelInput"),
   saveApiSettings: document.getElementById("saveApiSettings"),
@@ -102,7 +120,6 @@ const els = {
   realignWorkspace: document.getElementById("realignWorkspace"),
   generateWorkspaceRuby: document.getElementById("generateWorkspaceRuby"),
   previewGenerated: document.getElementById("previewGenerated"),
-  publishWorkspace: document.getElementById("publishWorkspace"),
   searchSummary: document.getElementById("searchSummary"),
   searchResults: document.getElementById("searchResults"),
   workspaceOriginalLrc: document.getElementById("workspaceOriginalLrc"),
@@ -148,12 +165,59 @@ function formatDuration(seconds) {
   return minutes ? `${minutes}分${rest}秒` : `${rest}秒`;
 }
 
+function formatDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
 function stripRubyMarkup(value) {
   const template = document.createElement("template");
-  template.innerHTML = String(value || "");
+  template.innerHTML = sanitizeLyricsHtml(value);
   template.content.querySelectorAll("rt, rp").forEach((node) => node.remove());
   template.content.querySelectorAll("ruby").forEach((node) => node.replaceWith(...node.childNodes));
   return template.innerHTML;
+}
+
+function sanitizeLyricsHtml(value) {
+  const template = document.createElement("template");
+  template.innerHTML = String(value || "");
+  const allowed = new Set(["RUBY", "RT", "RP", "BR"]);
+  for (const element of template.content.querySelectorAll("*")) {
+    if (!allowed.has(element.tagName)) {
+      element.replaceWith(document.createTextNode(element.textContent || ""));
+      continue;
+    }
+    for (const attribute of Array.from(element.attributes)) element.removeAttribute(attribute.name);
+  }
+  return template.innerHTML;
+}
+
+function confirmOperation({ title, message, actionLabel = "确认" }) {
+  return new Promise((resolve) => {
+    els.confirmDialogTitle.textContent = title;
+    els.confirmDialogMessage.textContent = message;
+    els.confirmDialogAction.textContent = actionLabel;
+    const finish = (accepted) => {
+      els.confirmDialog.removeEventListener("close", onClose);
+      els.confirmDialogAction.onclick = null;
+      resolve(accepted);
+    };
+    const onClose = () => finish(false);
+    els.confirmDialog.addEventListener("close", onClose, { once: true });
+    els.confirmDialogAction.onclick = () => {
+      els.confirmDialog.removeEventListener("close", onClose);
+      els.confirmDialog.close("confirm");
+      finish(true);
+    };
+    els.confirmDialog.showModal();
+  });
 }
 
 async function requestJson(url, options = {}) {
@@ -224,6 +288,14 @@ function initAndroidBridge() {
 
 window.addEventListener("utapractice-android", async (event) => {
   const detail = event.detail || {};
+  if (detail.channel === "audio") {
+    if (detail.status === "done" && detail.song_name && state.current?.name === detail.song_name) {
+      await refreshSongsAfterLibraryMutation(detail.song_name).catch(() => {});
+    } else if (detail.status === "failed" && state.current?.name === detail.song_name) {
+      els.songAvailability.textContent = `${songAvailabilityText(state.current)} · ${detail.message || "音频下载失败"}`;
+    }
+    return;
+  }
   if (!els.apkSyncStatus) return;
   els.apkSyncStatus.textContent = detail.message || "";
   setApkSyncProgress(detail.progress || 0);
@@ -414,6 +486,21 @@ function filteredSongs() {
   });
 }
 
+function songTitle(song) {
+  return String(song?.title || song?.name || "未命名").trim();
+}
+
+function songArtist(song) {
+  if (Array.isArray(song?.artists) && song.artists.length) return song.artists.join(" / ");
+  return String(song?.artist || "").trim();
+}
+
+function songLabel(song) {
+  const title = songTitle(song);
+  const artist = songArtist(song);
+  return artist ? `${artist} — ${title}` : title;
+}
+
 function libraryFlags(song) {
   const flags = [audioStatusLabel(song), song.has_lyrics ? `${song.lyrics_type?.toUpperCase()} 歌词` : "无歌词"];
   if (song.learned) flags.push("已学会");
@@ -423,6 +510,13 @@ function libraryFlags(song) {
 function renderLibraryList() {
   if (!els.libraryList) return;
   els.libraryList.innerHTML = "";
+  const query = state.libraryQuery.trim().toLocaleLowerCase();
+  const visibleSongs = query
+    ? state.songs.filter((song) => songLabel(song).toLocaleLowerCase().includes(query) || song.name.toLocaleLowerCase().includes(query))
+    : state.songs;
+  els.libraryViewStatus.textContent = query
+    ? `找到 ${visibleSongs.length} 首歌曲`
+    : `共 ${state.songs.length} 首歌曲；选择歌曲进入练习。`;
   if (!state.songs.length) {
     const empty = document.createElement("p");
     empty.className = "library-empty";
@@ -430,7 +524,14 @@ function renderLibraryList() {
     els.libraryList.append(empty);
     return;
   }
-  for (const song of state.songs) {
+  if (!visibleSongs.length) {
+    const empty = document.createElement("p");
+    empty.className = "library-empty";
+    empty.textContent = "没有匹配的歌曲";
+    els.libraryList.append(empty);
+    return;
+  }
+  for (const song of visibleSongs) {
     const item = document.createElement("article");
     item.className = "library-item";
     item.dataset.songName = song.name;
@@ -438,9 +539,9 @@ function renderLibraryList() {
     const main = document.createElement("button");
     main.type = "button";
     main.className = "library-item-main";
-    main.setAttribute("aria-label", `载入 ${song.name}`);
+    main.setAttribute("aria-label", `载入 ${songLabel(song)}`);
     const title = document.createElement("strong");
-    title.textContent = song.name;
+    title.textContent = songLabel(song);
     const meta = document.createElement("span");
     meta.className = "meta-line";
     meta.textContent = libraryFlags(song);
@@ -456,9 +557,9 @@ function renderLibraryList() {
 
     const editButton = document.createElement("button");
     editButton.type = "button";
-    editButton.textContent = "改";
+    editButton.textContent = "编辑";
     editButton.title = "编辑歌词";
-    editButton.setAttribute("aria-label", `编辑 ${song.name} 的歌词`);
+    editButton.setAttribute("aria-label", `编辑 ${songLabel(song)} 的歌词`);
     editButton.addEventListener("click", async () => {
       if (!state.current || state.current.name !== song.name) {
         await loadSong(song.name).catch((error) => showToast(error.message));
@@ -467,14 +568,32 @@ function renderLibraryList() {
       closeSidebarOnMobile();
     });
 
+    const renameButton = document.createElement("button");
+    renameButton.type = "button";
+    renameButton.textContent = "重命名";
+    renameButton.setAttribute("aria-label", `重命名 ${songLabel(song)}`);
+    renameButton.addEventListener("click", () => {
+      state.renameTarget = song.name;
+      els.renameSongInput.value = song.name;
+      els.renameError.textContent = "";
+      els.renameDialog.showModal();
+      els.renameSongInput.focus();
+      els.renameSongInput.select();
+    });
+
     const deleteButton = document.createElement("button");
     deleteButton.type = "button";
     deleteButton.className = "danger";
-    deleteButton.textContent = "删";
-    deleteButton.title = "删除这首歌";
-    deleteButton.setAttribute("aria-label", `删除 ${song.name}`);
+    deleteButton.textContent = "归档";
+    deleteButton.title = "归档这首歌";
+    deleteButton.setAttribute("aria-label", `归档 ${songLabel(song)}`);
     deleteButton.addEventListener("click", async () => {
-      if (!confirm(`确定删除「${song.name}」吗？文件会移动到归档目录。`)) return;
+      const accepted = await confirmOperation({
+        title: "归档歌曲",
+        message: `确定归档「${songLabel(song)}」吗？音频、歌词和草稿会一起移到归档目录。`,
+        actionLabel: "确认归档",
+      });
+      if (!accepted) return;
       try {
         await requestJson(`/api/songs/${encodeURIComponent(song.name)}/delete`, { method: "POST" });
         if (state.current?.name === song.name) state.current = null;
@@ -485,7 +604,7 @@ function renderLibraryList() {
       }
     });
 
-    actions.append(editButton, deleteButton);
+    actions.append(editButton, renameButton, deleteButton);
     item.append(main, actions);
     els.libraryList.append(item);
   }
@@ -513,12 +632,17 @@ function selectedFilesLabel(input) {
   return `${files.length} 个文件`;
 }
 
+function remoteAudioAvailable(song) {
+  return Boolean(song?.remote_has_audio) && song.remote_audio_playable !== false;
+}
+
 function audioPlayable(song) {
-  return Boolean(song?.has_audio) && song.audio_playable !== false;
+  return (Boolean(song?.has_audio) && song.audio_playable !== false) || remoteAudioAvailable(song);
 }
 
 function audioStatusLabel(song) {
-  if (audioPlayable(song)) return "有音频";
+  if (song?.has_audio && song.audio_playable !== false) return "有音频";
+  if (remoteAudioAvailable(song)) return "音频待下载";
   if (song?.has_audio) return "音频格式不支持";
   return "无音频";
 }
@@ -550,6 +674,10 @@ function reportAudioPlaybackError(error) {
 
 function playCurrentAudio() {
   if (!audioPlayable(state.current)) return;
+  if (!els.audio.src && remoteAudioAvailable(state.current)) {
+    syncAudioSource({ preserveTime: true });
+    return;
+  }
   els.audio.play().catch(reportAudioPlaybackError);
 }
 
@@ -558,8 +686,9 @@ function audioSourceUrl(song, key) {
     try {
       const androidUrl = window.UtaPracticeAndroid.audioUrl(song.name, String(key));
       if (androidUrl) return androidUrl;
+      if (remoteAudioAvailable(song)) return "";
     } catch {
-      return `/api/songs/${encodeURIComponent(song.name)}/audio?key=${key}`;
+      return "";
     }
   }
   return `/api/songs/${encodeURIComponent(song.name)}/audio?key=${key}`;
@@ -587,7 +716,7 @@ function renderAudioTargetOptions() {
   for (const song of lyricOnlySongs) {
     const option = document.createElement("option");
     option.value = song.name;
-    option.textContent = song.has_audio ? `${song.name}（替换不可播放音频）` : song.name;
+    option.textContent = song.has_audio ? `${songLabel(song)}（替换不可播放音频）` : songLabel(song);
     els.audioTargetSongSelect.append(option);
   }
 
@@ -618,7 +747,7 @@ function renderLyricsTargetOptions() {
   for (const song of audioOnlySongs) {
     const option = document.createElement("option");
     option.value = song.name;
-    option.textContent = song.name;
+    option.textContent = songLabel(song);
     els.lyricsTargetSongSelect.append(option);
   }
 
@@ -665,7 +794,7 @@ function renderSongSelect() {
     const option = document.createElement("option");
     option.value = song.name;
     const flags = [audioPlayable(song) ? "音频" : song.has_audio ? "音频格式不支持" : null, song.has_lyrics ? song.lyrics_type?.toUpperCase() : null].filter(Boolean).join(" + ");
-    option.textContent = `${song.name} (${flags || "空条目"})`;
+    option.textContent = `${songLabel(song)} (${flags || "空条目"})`;
     els.songSelect.append(option);
   }
 
@@ -680,10 +809,14 @@ function renderSongSelect() {
 }
 
 function lineText(line) {
-  const rawOriginal = line.original_html || "";
+  const rawOriginal = sanitizeLyricsHtml(line.original_html || "");
   const original = state.showRuby ? rawOriginal : stripRubyMarkup(rawOriginal);
   const translation = line.translation || "";
+  const roman = String(line.roman || "").trim();
   if (state.displayMode === "original") return original || "";
+  if (state.displayMode === "original_roman") {
+    return roman ? `${original}<br><span class="roman-text">${escapeHtml(roman)}</span>` : original;
+  }
   return translation ? `${original}<br><span class="translation-text">${escapeHtml(translation)}</span>` : original;
 }
 
@@ -754,10 +887,19 @@ function resetAudioElement() {
 function syncAudioSource({ preserveTime = true } = {}) {
   if (!audioPlayable(state.current)) return;
   const key = Number(els.keySlider.value);
+  const sourceUrl = audioSourceUrl(state.current, key);
+  if (!sourceUrl) {
+    if (remoteAudioAvailable(state.current) && typeof window.UtaPracticeAndroid?.ensureAudio === "function") {
+      els.songAvailability.textContent = `${songAvailabilityText(state.current)} · 正在下载音频…`;
+      window.UtaPracticeAndroid.ensureAudio(state.current.name, String(key));
+    }
+    return;
+  }
   const currentTime = preserveTime ? els.audio.currentTime || 0 : 0;
   const wasPaused = els.audio.paused;
   const token = ++audioSourceToken;
   els.keyOutput.value = String(key);
+  if (els.keySummaryValue) els.keySummaryValue.textContent = key > 0 ? `+${key}` : String(key);
   els.audio.addEventListener(
     "loadedmetadata",
     () => {
@@ -767,7 +909,7 @@ function syncAudioSource({ preserveTime = true } = {}) {
     },
     { once: true },
   );
-  els.audio.src = audioSourceUrl(state.current, key);
+  els.audio.src = sourceUrl;
   els.audio.load();
 }
 
@@ -783,13 +925,20 @@ async function loadSong(name) {
   state.lyrics = song.lyrics || [];
 
   els.emptyState.hidden = true;
+  els.practiceHeader.hidden = false;
+  els.practiceSongTitle.textContent = songLabel(song);
+  els.practiceSongStatus.textContent = songAvailabilityText(song);
   els.songPanel.hidden = false;
   els.settingsPanel.hidden = false;
-  els.songTitle.textContent = `♫ ${song.name}`;
+  els.songTitle.textContent = `♫ ${songLabel(song)}`;
   const canPlay = audioPlayable(song);
   els.songAvailability.textContent = songAvailabilityText(song);
   els.keySlider.value = String(song.saved_key || 0);
   els.keyOutput.value = String(song.saved_key || 0);
+  if (els.keySummaryValue) {
+    const savedKey = Number(song.saved_key || 0);
+    els.keySummaryValue.textContent = savedKey > 0 ? `+${savedKey}` : String(savedKey);
+  }
   els.rangeInput.value = song.range || "";
   els.learnedInput.checked = Boolean(song.learned);
   els.keyField.hidden = !canPlay;
@@ -932,7 +1081,7 @@ function importAndroidLyricsFile() {
   const label = targetSong || songName;
   setUploadStatus(els.lyricsUploadStatus, label ? `请选择要导入到「${label}」的歌词` : "请选择要导入的歌词");
   try {
-    window.UtaPracticeAndroid.chooseLyricsForSong(targetSong || songName);
+    window.UtaPracticeAndroid.chooseLyricsForSong(targetSong || songName, els.lyricsArtistInput?.value.trim() || "");
   } catch (error) {
     if (els.lyricsUploadButton) els.lyricsUploadButton.disabled = false;
     setUploadStatus(els.lyricsUploadStatus, error.message, "error");
@@ -945,6 +1094,8 @@ async function uploadLyricsFiles() {
   const files = Array.from(els.lyricsUploadInput?.files || []);
   const target_song = els.lyricsTargetSongSelect?.value || "";
   const song_name = els.lyricsSongNameInput?.value.trim() || "";
+  const artist = els.lyricsArtistInput?.value.trim() || "";
+  const album = els.lyricsAlbumInput?.value.trim() || "";
   if (target_song && files.length !== 1) {
     setUploadStatus(els.lyricsUploadStatus, "关联歌曲时只能上传一个歌词文件", "error");
     return;
@@ -955,7 +1106,7 @@ async function uploadLyricsFiles() {
     url: "/api/upload/lyrics",
     statusEl: els.lyricsUploadStatus,
     button: els.lyricsUploadButton,
-    formFields: { target_song, song_name },
+    formFields: { target_song, song_name, artist, album },
     successMessage: "歌词上传完成",
   });
 }
@@ -965,6 +1116,8 @@ async function saveLyricsText() {
   const song_name = els.lyricsSongNameInput?.value.trim() || "";
   const lyrics_text = els.lyricsTextInput?.value.trim() || "";
   const lyrics_type = els.lyricsTextType?.value || "lrc";
+  const artist = els.lyricsArtistInput?.value.trim() || "";
+  const album = els.lyricsAlbumInput?.value.trim() || "";
   if (!target_song && !song_name) {
     setUploadStatus(els.lyricsTextStatus, "请选择已有歌曲或填写新歌词歌名", "error");
     return;
@@ -979,7 +1132,7 @@ async function saveLyricsText() {
   try {
     const result = await requestJson("/api/upload/lyrics-text", {
       method: "POST",
-      body: JSON.stringify({ target_song, song_name, lyrics_text, lyrics_type }),
+      body: JSON.stringify({ target_song, song_name, artist, album, lyrics_text, lyrics_type }),
     });
     await refreshSongsAfterLibraryMutation(result.song_name || target_song || song_name);
     setUploadStatus(els.lyricsTextStatus, `已保存：${result.song_name}`, "success");
@@ -1019,12 +1172,11 @@ function jobHasFinalFailureLog(job) {
 }
 
 function jobTypeLabel(job) {
-  if (job.type === "generate_ruby_from_rows") return "工作页 ruby 生成";
-  if (job.mode === "chunked") return "旧版实验性分段";
-  return "旧版稳定整首";
+  if (job.type === "generate_ruby_from_rows") return "歌词注音生成";
+  return "历史任务（旧流程）";
 }
 
-function workspaceJobReadyForPublish(job) {
+function workspaceJobReadyForOpen(job) {
   return job.type === "generate_ruby_from_rows" && job.status === "done" && !jobHasFinalFailureLog(job);
 }
 
@@ -1033,11 +1185,6 @@ async function openWorkspaceJob(job) {
   setPage("search");
   await loadWorkspace(job.song_name);
   await previewGenerated({ refreshWorkspace: true });
-}
-
-async function publishWorkspaceJob(job) {
-  await openWorkspaceJob(job);
-  await publishWorkspace();
 }
 
 function renderJobs(jobs) {
@@ -1068,7 +1215,8 @@ function renderJobs(jobs) {
         : job.duration_seconds;
     const duration = runningSeconds == null ? "" : ` · AI 用时 ${formatDuration(runningSeconds)}`;
     const progress = Number.isFinite(Number(job.progress)) ? ` · ${Number(job.progress)}%` : "";
-    meta.textContent = `${jobTypeLabel(job)}${progress}${duration} · ${job.updated_at || job.created_at || ""}`;
+    const updatedAt = formatDateTime(job.updated_at || job.created_at);
+    meta.textContent = `${jobTypeLabel(job)}${progress}${duration}${updatedAt ? ` · ${updatedAt}` : ""}`;
     item.append(meta);
 
     if (Number.isFinite(Number(job.progress))) {
@@ -1079,22 +1227,19 @@ function renderJobs(jobs) {
     }
 
     const stepMessages = jobStepMessages(job);
-    const steps = document.createElement("div");
-    steps.className = "job-steps";
-    for (const message of stepMessages.slice(-8)) {
-      const line = document.createElement("div");
-      line.className = "job-step-line";
-      line.textContent = message;
-      steps.append(line);
+    if (stepMessages.length) {
+      const latest = document.createElement("p");
+      latest.className = "job-latest-step";
+      latest.textContent = stepMessages.at(-1);
+      item.append(latest);
     }
-    item.append(steps);
 
-    if (stepMessages.length > 8) {
+    if (stepMessages.length > 1) {
       const details = document.createElement("details");
       details.className = "job-log-details";
       details.open = displayStatus === "failed" || displayStatus === "warning";
       const summary = document.createElement("summary");
-      summary.textContent = `查看全部日志（${stepMessages.length} 条）`;
+      summary.textContent = `查看过程（${stepMessages.length} 条）`;
       details.append(summary);
       const allSteps = document.createElement("div");
       allSteps.className = "job-steps";
@@ -1120,7 +1265,7 @@ function renderJobs(jobs) {
       });
       item.append(stopButton);
     }
-    if (job.status === "failed" || job.status === "stopped") {
+    if ((job.status === "failed" || job.status === "stopped") && job.type === "generate_ruby_from_rows") {
       const retryButton = document.createElement("button");
       retryButton.type = "button";
       retryButton.textContent = "重试";
@@ -1137,13 +1282,13 @@ function renderJobs(jobs) {
       });
       item.append(retryButton);
     }
-    if (workspaceJobReadyForPublish(job)) {
+    if (workspaceJobReadyForOpen(job)) {
       const actions = document.createElement("div");
       actions.className = "job-actions";
 
       const button = document.createElement("button");
       button.type = "button";
-      button.textContent = "打开工作源";
+      button.textContent = "打开生成结果";
       button.addEventListener("click", async () => {
         try {
           await openWorkspaceJob(job);
@@ -1152,35 +1297,27 @@ function renderJobs(jobs) {
         }
       });
       actions.append(button);
-
-      {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.textContent = "发布正式歌词";
-        button.addEventListener("click", async () => {
-          try {
-            await publishWorkspaceJob(job);
-          } catch (error) {
-            showToast(error.message);
-          }
-        });
-        actions.append(button);
-      }
       item.append(actions);
     } else if (job.status === "done" && job.type !== "generate_ruby_from_rows") {
       const note = document.createElement("p");
       note.className = "meta-line";
-      note.textContent = "旧版任务已直接写入正式歌词，无需转正";
+      note.textContent = "历史任务已完成，结果已写入正式歌词";
       item.append(note);
     }
     if (["done", "failed", "stopped"].includes(job.status)) {
       const deleteButton = document.createElement("button");
       deleteButton.type = "button";
       deleteButton.className = "job-delete-button";
-      deleteButton.textContent = "×";
+      deleteButton.textContent = "删除";
       deleteButton.title = "删除任务";
       deleteButton.setAttribute("aria-label", "删除任务");
       deleteButton.addEventListener("click", async () => {
+        const accepted = await confirmOperation({
+          title: "删除任务记录",
+          message: `确定删除「${job.song_name || "未命名"}」的任务记录吗？已经生成的歌词不会受影响。`,
+          actionLabel: "删除记录",
+        });
+        if (!accepted) return;
         await requestJson(`/api/convert-jobs/${encodeURIComponent(job.id)}`, { method: "DELETE" });
         await loadJobs();
       });
@@ -1208,6 +1345,7 @@ function scheduleJobPolling() {
       if (!jobs.some((job) => job.status === "queued" || job.status === "running")) {
         clearInterval(jobPollTimer);
         jobPollTimer = null;
+        if (state.current?.name) await loadSong(state.current.name);
       }
     } catch {
       clearInterval(jobPollTimer);
@@ -1232,9 +1370,8 @@ function renderSearchResults() {
   els.searchResults.innerHTML = "";
   els.searchSummary.textContent = state.workspace.results.length ? `${state.workspace.results.length} 条结果` : "暂无结果";
   state.workspace.results.forEach((result, index) => {
-    const button = document.createElement("div");
-    button.setAttribute("role", "button");
-    button.tabIndex = 0;
+    const button = document.createElement("button");
+    button.type = "button";
     button.className = "search-result";
     button.dataset.index = String(index);
     button.innerHTML = `
@@ -1243,12 +1380,6 @@ function renderSearchResults() {
       <em>${escapeHtml(result.provider)} · ${result.duration ? formatTime(result.duration) : "未知时长"} · ${result.has_translation ? "含翻译" : "无翻译"}${result.has_roman ? " · 含注音" : ""}${result.has_word_timing ? " · 含逐字" : ""}</em>
     `;
     button.addEventListener("click", () => selectSearchResult(index));
-    button.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        selectSearchResult(index);
-      }
-    });
     els.searchResults.append(button);
   });
 }
@@ -1285,8 +1416,9 @@ function renderGenerated(lyrics) {
     item.className = "generated-row";
     item.innerHTML = `
       <span>${formatTime(line.time)}</span>
-      <strong>${line.original_html || ""}</strong>
+      <strong>${sanitizeLyricsHtml(line.original_html || "")}</strong>
       ${line.translation ? `<small>${escapeHtml(line.translation)}</small>` : ""}
+      ${line.roman ? `<small>${escapeHtml(line.roman)}</small>` : ""}
     `;
     els.generatedPreviewBox.append(item);
   }
@@ -1315,7 +1447,7 @@ function workspaceEditorIsEmpty() {
 function workspaceHasGenerated(workspace) {
   return (
     workspaceMatchesEditor(workspace) &&
-    ["generated", "published"].includes(workspace.status) &&
+    workspace.status === "generated" &&
     Array.isArray(workspace.generated_lyrics) &&
     workspace.generated_lyrics.length > 0
   );
@@ -1357,8 +1489,10 @@ async function selectSearchResult(index) {
   const result = state.workspace.results[index];
   if (!result) return;
   state.workspace.selectedResult = result;
-  // 选中结果后，工作源歌名用实际曲名，而不是搜索词（任务列表标题也因此正确）。
+  // 选中结果后使用实际曲名，确保草稿、任务和正式歌词名称一致。
   if (result.title) els.workspaceSongName.value = result.title;
+  if (els.workspaceArtist) els.workspaceArtist.value = result.artist || "";
+  if (els.workspaceAlbum) els.workspaceAlbum.value = result.album || "";
   els.searchResults.querySelectorAll(".search-result").forEach((node) => node.classList.toggle("active", Number(node.dataset.index) === index));
   const message = `正在预览：${result.provider} · ${result.title || ""}`;
   setWorkspaceStatus(message);
@@ -1466,8 +1600,8 @@ async function saveWorkspace({ silent = false } = {}) {
   });
   populateWorkspace(workspace);
   if (!silent) {
-    setWorkspaceStatus("工作源已保存");
-    showToast("工作源已保存");
+    setWorkspaceStatus("歌词草稿已保存");
+    showToast("草稿已保存");
   }
   return workspace;
 }
@@ -1475,7 +1609,7 @@ async function saveWorkspace({ silent = false } = {}) {
 async function loadWorkspace(name) {
   const workspace = await requestJson(`/api/lyrics-workspace/${encodeURIComponent(name)}`);
   populateWorkspace(workspace);
-  setWorkspaceStatus(`已载入工作源：${workspace.song_name}`);
+  setWorkspaceStatus(`已载入歌词草稿：${workspace.song_name}`);
   return workspace;
 }
 
@@ -1529,35 +1663,19 @@ async function previewGenerated({ refreshWorkspace = false } = {}) {
     if (workspaceEditorIsEmpty()) {
       populateWorkspace(workspace);
     } else {
-      clearGeneratedPreview("当前编辑内容和已保存工作源不一致，请先保存并重新生成");
+      clearGeneratedPreview("当前内容和已保存草稿不一致，请先保存并重新生成");
       showToast("没有当前内容对应的生成结果");
       return;
     }
   }
   if (!workspaceHasGenerated(workspace)) {
-    const message = workspace.status === "generating" ? "当前任务仍在生成中，完成后再预览" : "当前工作源尚未生成结果";
+    const message = workspace.status === "generating" ? "当前任务仍在生成中，完成后再预览" : "当前草稿尚未生成结果";
     clearGeneratedPreview(message);
     showToast("暂无可预览的生成结果");
     return;
   }
   populateWorkspace(workspace);
   setWorkspaceStatus(`已载入当前生成结果：${workspace.generated_lyrics.length} 行`);
-}
-
-async function publishWorkspace() {
-  const name = workspaceName();
-  if (!name) {
-    showToast("请先输入歌曲名");
-    return;
-  }
-  const result = await requestJson(`/api/lyrics-workspace/${encodeURIComponent(name)}/publish`, {
-    method: "POST",
-    body: JSON.stringify({}),
-  });
-  setWorkspaceStatus(`已发布正式歌词：${result.published_count ?? result.lyrics_count} 行`);
-  await loadSongs();
-  if (state.current?.name === name) await loadSong(name);
-  showToast("已发布为正式歌词");
 }
 
 els.filterGroup.addEventListener("click", (event) => {
@@ -1567,6 +1685,11 @@ els.filterGroup.addEventListener("click", (event) => {
   els.filterGroup.querySelectorAll("button").forEach((node) => node.classList.toggle("active", node === button));
   renderSongSelect();
 });
+els.aiSettingsForm?.addEventListener("submit", (event) => event.preventDefault());
+els.librarySearchInput?.addEventListener("input", () => {
+  state.libraryQuery = els.librarySearchInput.value;
+  renderLibraryList();
+});
 
 els.songSelect.addEventListener("change", () => loadSong(els.songSelect.value));
 els.addSongButton?.addEventListener("click", () => setImportPanel("audio"));
@@ -1574,12 +1697,17 @@ els.addLyricsButton?.addEventListener("click", () => setImportPanel("lyrics"));
 
 els.keySlider.addEventListener("input", () => {
   els.keyOutput.value = els.keySlider.value;
+  if (els.keySummaryValue) {
+    const key = Number(els.keySlider.value);
+    els.keySummaryValue.textContent = key > 0 ? `+${key}` : String(key);
+  }
 });
 els.keySlider.addEventListener("change", syncAudioSource);
 els.saveKey.addEventListener("click", () => saveMeta({ saved_key: Number(els.keySlider.value) }, "默认 Key 已保存"));
 els.resetKey.addEventListener("click", () => {
   els.keySlider.value = "0";
   els.keyOutput.value = "0";
+  if (els.keySummaryValue) els.keySummaryValue.textContent = "0";
   syncAudioSource();
 });
 els.displayMode.addEventListener("change", () => {
@@ -1687,6 +1815,34 @@ els.saveLyrics.addEventListener("click", async () => {
     els.editorError.textContent = error.message;
   }
 });
+els.confirmRename?.addEventListener("click", async () => {
+  const oldName = state.renameTarget;
+  const newName = els.renameSongInput.value.trim();
+  if (!oldName || !newName) {
+    els.renameError.textContent = "请输入新歌名";
+    return;
+  }
+  els.confirmRename.disabled = true;
+  els.renameError.textContent = "";
+  try {
+    const result = await requestJson(`/api/songs/${encodeURIComponent(oldName)}/rename`, {
+      method: "POST",
+      body: JSON.stringify({ new_name: newName }),
+    });
+    state.renameTarget = null;
+    els.renameDialog.close("save");
+    await refreshSongsAfterLibraryMutation(result.song_name);
+    showToast("歌曲已重命名");
+  } catch (error) {
+    els.renameError.textContent = error.message;
+  } finally {
+    els.confirmRename.disabled = false;
+  }
+});
+els.renameDialog?.addEventListener("close", () => {
+  state.renameTarget = null;
+  els.renameError.textContent = "";
+});
 
 els.audioUploadInput.addEventListener("change", updateAudioUploadStatus);
 els.audioTargetSongSelect.addEventListener("change", updateAudioUploadStatus);
@@ -1696,6 +1852,8 @@ els.lyricsTargetSongSelect.addEventListener("change", () => {
   updateLyricsTextStatus();
 });
 els.lyricsSongNameInput.addEventListener("input", updateLyricsTextStatus);
+els.lyricsArtistInput?.addEventListener("input", updateLyricsTextStatus);
+els.lyricsAlbumInput?.addEventListener("input", updateLyricsTextStatus);
 els.lyricsUploadInput.addEventListener("change", updateLyricsUploadStatus);
 els.lyricsUploadButton.addEventListener("click", uploadLyricsFiles);
 els.lyricsTextType.addEventListener("change", updateLyricsTextStatus);
@@ -1747,7 +1905,6 @@ els.generateWorkspaceRuby.addEventListener("click", () => generateWorkspaceRuby(
   showToast("提交失败");
 }));
 els.previewGenerated.addEventListener("click", () => previewGenerated().catch((error) => showToast(error.message)));
-els.publishWorkspace.addEventListener("click", () => publishWorkspace().catch((error) => showToast(error.message)));
 els.refreshJobs.addEventListener("click", () => loadJobs().catch((error) => showToast(error.message)));
 els.openSidebar.addEventListener("click", openSidebarOnMobile);
 els.closeSidebar.addEventListener("click", closeSidebar);

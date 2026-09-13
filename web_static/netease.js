@@ -37,6 +37,7 @@
     results: [],
     selectedId: null,
     qrTimer: null,
+    statusLoaded: false,
   };
 
   function defaultBridgeBase() {
@@ -188,6 +189,7 @@
   }
 
   async function refreshLoginStatus() {
+    state.statusLoaded = true;
     try {
       setStatus("正在检查网易云登录状态...");
       const payload = await bridgeRequest("/api/netease/status");
@@ -363,12 +365,12 @@
           id: song.id,
           name: song.name,
           artist: song.artist,
+          album: song.album || "",
           level: els.quality.value,
-          with_lyrics: withAi,
         }),
       });
       if (payload.skipped) {
-        setResultStatus(`「${payload.song_name}」音频已存在，跳过下载${withAi ? "，继续处理歌词" : ""}`, "success");
+        setResultStatus(`「${payload.song_name}」音频已存在，已刷新歌词`, "success");
       } else if (payload.overwritten) {
         setResultStatus(`已覆盖下载：${payload.filename}`, "success");
       } else {
@@ -388,14 +390,18 @@
       }
 
       if (withAi) {
-        if (!payload.lyrics_saved && !payload.lyrics_existing) {
+        if (!payload.lyrics_saved && !payload.lyrics_existing && !payload.original_lrc) {
           setResultStatus("没有拿到歌词，未提交 AI 生成", "error");
           return;
         }
         try {
           const workspace = await requestJson(`/api/lyrics-workspace/${encodeURIComponent(payload.song_name)}/from-song`, {
             method: "POST",
-            body: JSON.stringify({}),
+            body: JSON.stringify({
+              original_lrc: payload.original_lrc || "",
+              translation_lrc: payload.translation_lrc || "",
+              roman_lrc: payload.roman_lrc || "",
+            }),
           });
           if (typeof populateWorkspace === "function") populateWorkspace(workspace);
           const job = await requestJson("/api/convert-jobs", {
@@ -404,10 +410,10 @@
           });
           if (typeof loadJobs === "function") await loadJobs();
           if (typeof scheduleJobPolling === "function") scheduleJobPolling();
-          setResultStatus(`已${payload.skipped ? "跳过下载，" : ""}提交 AI 生成：${job.song_name}`, "success");
-          showToast("已提交 AI 生成任务");
+          setResultStatus(`已提交注音生成：${job.song_name}`, "success");
+          showToast("注音生成任务已开始");
         } catch (error) {
-          setResultStatus(`AI 生成提交失败：${error.message}`, "error");
+          setResultStatus(`注音生成提交失败：${error.message}`, "error");
         }
       }
     } catch (error) {
@@ -435,6 +441,9 @@
   els.sendCaptcha.addEventListener("click", sendCaptcha);
   els.captchaLogin.addEventListener("click", loginWithCaptcha);
   els.cookieLogin.addEventListener("click", saveCookieLogin);
+  panel.closest("details")?.addEventListener("toggle", (event) => {
+    if (event.currentTarget.open && !state.statusLoaded) refreshLoginStatus();
+  });
   els.captcha.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -447,5 +456,5 @@
   } else {
     setBridgeBase(loadBridgeBase());
   }
-  refreshLoginStatus();
+  setStatus("展开后检查网易云账号状态");
 })();

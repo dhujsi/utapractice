@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#f7f8fb">
+  <meta name="theme-color" content="#f4f6f9">
   <title>练歌房</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><text y=%2252%22 font-size=%2252%22>♫</text></svg>">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/web_static/app.css">
   <link rel="stylesheet" href="/web_static/netease.css">
@@ -13,20 +14,44 @@
   <div class="app-shell" id="appShell">
     <div class="sidebar-backdrop" id="sidebarBackdrop" aria-hidden="true"></div>
     <aside class="sidebar">
-      <div class="brand">
-        <h1>练歌房</h1>
-        <button class="plain-icon mobile-only" id="closeSidebar" type="button" aria-label="返回">←</button>
+      <div class="sidebar-header">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">♫</div>
+          <div class="brand-copy">
+            <p class="brand-eyebrow">UTAPRACTICE</p>
+            <h1>练歌房</h1>
+            <p>专注每一句</p>
+          </div>
+          <button class="plain-icon mobile-only" id="closeSidebar" type="button" aria-label="返回">←</button>
+        </div>
+
+        <div class="sidebar-eyebrow">工作区</div>
+        <nav class="side-nav" aria-label="页面">
+          <button type="button" class="active" data-page="practice">
+            <span class="nav-item-main"><span class="nav-icon" aria-hidden="true">▶</span><span>练歌</span></span>
+            <span class="nav-item-meta">开始练习</span>
+          </button>
+          <button type="button" data-page="library">
+            <span class="nav-item-main"><span class="nav-icon" aria-hidden="true">▤</span><span>歌库</span></span>
+            <span class="nav-item-meta">管理歌曲</span>
+          </button>
+          <button type="button" data-page="search">
+            <span class="nav-item-main"><span class="nav-icon" aria-hidden="true">✦</span><span>歌词制作</span></span>
+            <span class="nav-item-meta">搜索与生成</span>
+          </button>
+        </nav>
       </div>
 
-      <nav class="side-nav" aria-label="页面">
-        <button type="button" class="active" data-page="practice">练习</button>
-        <button type="button" data-page="library">歌库</button>
-        <button type="button" data-page="search">搜索·生成</button>
-      </nav>
-
-      <div class="side-page active" data-page-panel="practice">
+      <div class="sidebar-body">
+        <div class="side-page active" data-page-panel="practice">
         <section class="panel">
-          <h2>曲库</h2>
+          <div class="panel-heading">
+            <div>
+              <p class="sidebar-eyebrow">练习曲目</p>
+              <h2>选择歌曲</h2>
+            </div>
+            <span class="panel-kicker">歌库</span>
+          </div>
           <div class="segmented" id="filterGroup" role="radiogroup" aria-label="筛选">
             <button type="button" class="active" data-filter="all">全部</button>
             <button type="button" data-filter="learned">已学会</button>
@@ -39,75 +64,103 @@
         </section>
 
         <section class="panel song-panel" id="songPanel" hidden>
-          <h2 id="songTitle"></h2>
-          <p class="meta-line" id="songAvailability"></p>
-          <button type="button" id="editLyrics">编辑歌词</button>
-          <label class="field" id="keyField">
-            <span>实时升降调 (Key)</span>
-            <input id="keySlider" type="range" min="-12" max="12" value="0">
-            <output id="keyOutput">0</output>
-          </label>
-          <div class="button-row">
-            <button type="button" id="saveKey">设为默认 Key</button>
-            <button type="button" id="resetKey">还原原 Key</button>
+          <div class="panel-heading song-panel-heading">
+            <div>
+              <p class="sidebar-eyebrow">当前歌曲</p>
+              <h2 id="songTitle"></h2>
+            </div>
+            <span class="song-status-dot" aria-hidden="true"></span>
           </div>
+          <p class="meta-line" id="songAvailability"></p>
+          <div class="song-actions">
+            <button type="button" id="editLyrics" class="wide-button">编辑歌词</button>
+          </div>
+          <details class="control-disclosure" id="keyField" hidden>
+            <summary>
+              <span class="disclosure-title"><strong>升降调</strong><small>实时调整播放音高</small></span>
+              <output id="keySummaryValue">0</output>
+            </summary>
+            <div class="disclosure-content">
+              <input id="keySlider" type="range" min="-12" max="12" value="0" aria-label="实时升降调">
+              <div class="range-scale" aria-hidden="true"><span>-12</span><span>原调</span><span>+12</span></div>
+              <output id="keyOutput">0</output>
+              <div class="button-row">
+                <button type="button" id="saveKey">设为默认 Key</button>
+                <button type="button" id="resetKey">还原原 Key</button>
+              </div>
+            </div>
+          </details>
         </section>
 
         <section class="panel song-panel" id="settingsPanel" hidden>
-          <h2>显示 & 备注</h2>
-          <label class="field">
-            <span>歌词显示模式</span>
-            <select id="displayMode">
-              <option value="both">原文 + 译文</option>
-              <option value="original">仅原文</option>
-            </select>
-          </label>
-          <label class="check-row">
-            <input id="rubyToggle" type="checkbox" checked>
-            <span>假名标注</span>
-          </label>
-          <div class="field">
-            <span>歌词对齐</span>
-            <div class="segmented" id="alignGroup">
-              <button type="button" data-align="left">居左</button>
-              <button type="button" class="active" data-align="center">居中</button>
-              <button type="button" data-align="right">居右</button>
+          <div class="panel-heading">
+            <div>
+              <p class="sidebar-eyebrow">显示</p>
+              <h2>练习设置</h2>
             </div>
           </div>
-          <label class="field">
-            <span>备注</span>
-            <input id="rangeInput" type="text" autocomplete="off">
-          </label>
-          <label class="check-row">
-            <input id="learnedInput" type="checkbox">
-            <span>已学会</span>
-          </label>
+          <div class="setting-group">
+            <p class="setting-group-title">歌词呈现</p>
+            <label class="field">
+              <span>显示模式</span>
+              <select id="displayMode">
+                <option value="both">原文 + 译文</option>
+                <option value="original_roman">原文 + 罗马音</option>
+                <option value="original">仅原文</option>
+              </select>
+            </label>
+            <label class="check-row">
+              <input id="rubyToggle" type="checkbox" checked>
+              <span>显示假名标注</span>
+            </label>
+            <div class="field">
+              <span>歌词对齐</span>
+              <div class="segmented" id="alignGroup">
+                <button type="button" data-align="left">居左</button>
+                <button type="button" class="active" data-align="center">居中</button>
+                <button type="button" data-align="right">居右</button>
+              </div>
+            </div>
+          </div>
+          <div class="setting-group">
+            <p class="setting-group-title">学习记录</p>
+            <label class="field">
+              <span>备注</span>
+              <input id="rangeInput" type="text" autocomplete="off">
+            </label>
+            <label class="check-row">
+              <input id="learnedInput" type="checkbox">
+              <span>标记为已学会</span>
+            </label>
+          </div>
         </section>
 
-        <section class="panel song-panel apk-only-panel" id="apkSyncPanel" hidden>
-          <h2>APK 可选同步</h2>
-          <label class="field">
-            <span>可选同步后端地址</span>
-            <input id="apkServerUrl" type="url" placeholder="http://your-server.local:8502">
-          </label>
-          <div class="button-row">
-            <button type="button" id="apkSyncAll">同步全部</button>
+        <details class="panel control-disclosure apk-only-panel" id="apkSyncPanel" hidden>
+          <summary><span class="disclosure-title"><strong>本机同步</strong><small>APK 离线歌曲管理</small></span></summary>
+          <div class="disclosure-content">
+            <label class="field">
+              <span>可选同步后端地址</span>
+              <input id="apkServerUrl" type="url" placeholder="http://your-server.local:8502">
+            </label>
+            <div class="button-row">
+              <button type="button" id="apkSyncAll">同步全部</button>
+            </div>
+            <div class="job-progress apk-sync-progress">
+              <span id="apkSyncProgress"></span>
+            </div>
+            <p class="status-line" id="apkSyncStatus">已同步的歌曲可离线播放。</p>
           </div>
-          <div class="job-progress apk-sync-progress">
-            <span id="apkSyncProgress"></span>
-          </div>
-          <p class="status-line" id="apkSyncStatus">已同步的歌曲可离线播放。</p>
-        </section>
-      </div>
+        </details>
+        </div>
 
-      <div class="side-page" data-page-panel="library">
+        <div class="side-page" data-page-panel="library">
         <section class="panel">
-          <h2>本地导入</h2>
+          <h2>导入内容</h2>
           <div class="library-add-row">
             <button type="button" id="addSongButton" class="wide-button">添加歌曲</button>
             <button type="button" id="addLyricsButton" class="wide-button">添加歌词</button>
           </div>
-          <p class="status-line" id="libraryAddStatus">歌库列表在右侧，每行带「改 / 删」按钮。</p>
+          <p class="status-line" id="libraryAddStatus">音频和歌词可以分开导入，歌名相同时会自动合并。</p>
         </section>
 
         <section class="panel library-import-form" id="audioImportPanel" hidden>
@@ -135,6 +188,14 @@
             <input id="lyricsSongNameInput" type="text" autocomplete="off" placeholder="未关联时填写">
           </label>
           <label class="field">
+            <span>歌手（可选）</span>
+            <input id="lyricsArtistInput" type="text" autocomplete="off" placeholder="用于保存歌曲信息">
+          </label>
+          <label class="field">
+            <span>专辑（可选）</span>
+            <input id="lyricsAlbumInput" type="text" autocomplete="off" placeholder="用于保存歌曲信息">
+          </label>
+          <label class="field">
             <span>LRC / JSON</span>
             <input id="lyricsUploadInput" type="file" multiple accept=".lrc,.json,application/json">
           </label>
@@ -154,13 +215,15 @@
           <button type="button" id="saveLyricsText" class="wide-button">保存输入歌词</button>
           <p class="status-line upload-status" id="lyricsTextStatus">可粘贴 LRC 或 JSON 歌词</p>
         </section>
-      </div>
+        </div>
 
-      <div class="side-page" data-page-panel="search">
-        <section class="panel">
+        <div class="side-page" data-page-panel="search">
+        <details class="panel settings-disclosure">
+          <summary>AI 服务设置</summary>
           <div class="section-heading">
-            <h2>接口设置</h2>
+            <h2>生成服务</h2>
           </div>
+          <form id="aiSettingsForm">
           <label class="field">
             <span>OpenAI 兼容 Base URL</span>
             <input id="baseUrlInput" type="url" placeholder="https://api.openai.com/v1">
@@ -173,12 +236,13 @@
             <span>模型</span>
             <input id="modelInput" type="text" placeholder="deepseek-v4-pro">
           </label>
-          <p class="status-line" id="aiSettingsStatus">正在读取接口状态...</p>
+          <p class="status-line" id="aiSettingsStatus" aria-live="polite">正在读取接口状态...</p>
           <div class="button-row">
             <button type="button" id="saveApiSettings">保存接口设置</button>
             <button type="button" id="testApiSettings">测试连接</button>
           </div>
-        </section>
+          </form>
+        </details>
 
         <section class="panel">
           <div class="section-heading">
@@ -187,6 +251,7 @@
           </div>
           <div class="job-list" id="jobList"></div>
         </section>
+        </div>
       </div>
     </aside>
 
@@ -194,7 +259,17 @@
       <button class="sidebar-toggle mobile-only" id="openSidebar" type="button" aria-label="打开侧栏">☰</button>
 
       <section class="player-view" id="playerView">
-        <div class="empty-state" id="emptyState">请选择一首歌曲开始练习</div>
+        <header class="practice-header" id="practiceHeader" hidden>
+          <div>
+            <span>正在练习</span>
+            <strong id="practiceSongTitle"></strong>
+          </div>
+          <span id="practiceSongStatus"></span>
+        </header>
+        <div class="empty-state" id="emptyState">
+          <strong>选择一首歌，开始练习</strong>
+          <span>可从左侧选择已有歌曲，或前往歌库导入内容。</span>
+        </div>
         <div class="lyrics align-center" id="lyrics"></div>
         <div class="controls" id="controls" hidden>
           <div class="ab-controls">
@@ -218,8 +293,12 @@
           <div>
             <p class="meta-line">歌库</p>
             <h2>全部歌曲</h2>
-            <p class="status-line" id="libraryViewStatus">点歌曲载入练习；「改」编辑歌词，「删」归档歌曲。</p>
+            <p class="status-line" id="libraryViewStatus">选择歌曲进入练习；也可以编辑、重命名或归档。</p>
           </div>
+          <label class="library-search">
+            <span class="sr-only">搜索歌库</span>
+            <input id="librarySearchInput" type="search" autocomplete="off" placeholder="搜索歌名">
+          </label>
         </div>
         <div class="library-list" id="libraryList"></div>
       </section>
@@ -227,24 +306,24 @@
       <section class="search-view" id="searchView" hidden>
         <div class="workspace-header search-workspace-header">
           <div>
-            <p class="meta-line">搜索 · 生成歌词</p>
-            <h2>一次搜索，同页生成</h2>
+            <p class="meta-line">歌词制作</p>
+            <h2>搜索并生成注音歌词</h2>
             <p class="meta-line" id="workspaceEditorSong"></p>
           </div>
-          <p class="status-line" id="workspaceStatus">输入歌名或歌手，一次同时搜索歌词与网易云歌曲；选中后在下方直接生成。</p>
+          <p class="status-line" id="workspaceStatus" aria-live="polite">搜索歌曲，选择合适的歌词版本，确认后生成注音歌词。</p>
         </div>
 
         <section class="workspace-section search-panel">
           <div class="step-heading">
             <span>♪</span>
             <div>
-              <h2>搜索歌词 + 歌曲</h2>
-              <p class="meta-line">一个关键词同时搜歌词来源（默认网易云）与网易云歌曲；结果只预览，不写入歌库。</p>
+              <h2>选择歌曲和歌词版本</h2>
+              <p class="meta-line">搜索结果不会自动写入歌库，确认下载或生成后才会保存。</p>
             </div>
           </div>
           <div class="search-input-row">
             <label class="field">
-              <span>歌名 / 歌手</span>
+              <span>歌名、歌手或关键词</span>
               <input id="workspaceSongName" type="text" autocomplete="off">
             </label>
             <label class="field">
@@ -257,7 +336,7 @@
                 <option value="lrclib">LRCLIB</option>
               </select>
             </label>
-            <button type="button" id="searchLyrics" class="search-go-button">搜索</button>
+            <button type="button" id="searchLyrics" class="button-primary search-go-button">搜索</button>
           </div>
           <details class="search-fold search-advanced">
             <summary>高级选项（歌手 / 专辑）</summary>
@@ -272,7 +351,7 @@
               </label>
             </div>
           </details>
-          <p class="status-line" id="searchLyricsStatus">输入歌名或歌手后点搜索；歌词与歌曲默认选中第一条。</p>
+          <p class="status-line" id="searchLyricsStatus" aria-live="polite">输入关键词后搜索。</p>
 
           <div class="search-results-grid">
             <article class="results-pane">
@@ -280,14 +359,14 @@
                 <h3>歌词来源</h3>
                 <span class="meta-line" id="searchSummary">暂无结果</span>
               </div>
-              <div class="search-results" id="searchResults"></div>
+              <div class="search-results" id="searchResults"><p class="empty-copy">搜索后在这里选择歌词版本</p></div>
             </article>
             <article class="results-pane">
               <div class="section-heading">
                 <h3>网易云歌曲</h3>
                 <span class="meta-line" id="neteaseResultStatus">随搜索显示</span>
               </div>
-              <div class="netease-results" id="neteaseResults"></div>
+              <div class="netease-results" id="neteaseResults"><p class="empty-copy">搜索后在这里选择要下载的歌曲</p></div>
             </article>
           </div>
 
@@ -302,14 +381,14 @@
             </label>
             <label class="check-row">
               <input id="neteaseDownloadWithAi" type="checkbox">
-              <span>下载后 AI 生成 ruby JSON</span>
+              <span>下载后生成注音歌词</span>
             </label>
-            <button type="button" id="neteaseDownload" class="wide-button" disabled>下载选中歌曲</button>
+            <button type="button" id="neteaseDownload" class="button-primary wide-button" disabled>下载选中歌曲</button>
           </div>
         </section>
 
         <details class="search-fold netease-panel-fold">
-          <summary>网易云登录 / 连接（确认用）</summary>
+          <summary>网易云账号与连接</summary>
           <section class="netease-panel" id="neteasePanel">
             <p class="status-line" id="neteaseStatus">正在检查网易云登录状态...</p>
             <div class="button-row">
@@ -365,8 +444,8 @@
           <div class="step-heading">
             <span>1</span>
             <div>
-              <h2>工作源编辑和生成</h2>
-              <p class="meta-line">编辑原文、译文和读音源；AI 只写回工作源，不覆盖正式歌词。</p>
+              <h2>校对歌词素材</h2>
+              <p class="meta-line">生成前可调整原文、翻译和读音；完成后会直接更新这首歌的歌词。</p>
             </div>
           </div>
           <div class="source-editor-grid">
@@ -379,14 +458,14 @@
               <textarea id="workspaceTranslationLrc" class="source-textarea" spellcheck="false" placeholder="该版本没有译文"></textarea>
             </article>
             <article>
-              <h3>罗马音 / 注音 LRC</h3>
+              <h3>读音 / 罗马音 LRC</h3>
               <textarea id="workspaceRomanLrc" class="source-textarea" spellcheck="false" placeholder="该版本没有罗马音/读音"></textarea>
             </article>
           </div>
           <div class="step-actions">
-            <button type="button" id="saveWorkspace">保存工作源</button>
-            <button type="button" id="realignWorkspace">重新对齐</button>
-            <button type="button" id="generateWorkspaceRuby">AI 生成 ruby JSON</button>
+            <button type="button" id="saveWorkspace">保存草稿</button>
+            <button type="button" id="realignWorkspace">重新对齐时间轴</button>
+            <button type="button" id="generateWorkspaceRuby" class="button-primary">生成并应用</button>
           </div>
         </section>
 
@@ -394,8 +473,8 @@
           <div class="step-heading">
             <span>2</span>
             <div>
-              <h2>检查并发布</h2>
-              <p class="meta-line">确认生成结果后再发布到正式歌词，播放器只读取正式歌词。</p>
+              <h2>查看生成结果</h2>
+              <p class="meta-line">任务完成后播放器会自动使用最新歌词。</p>
             </div>
           </div>
           <div class="section-heading">
@@ -403,8 +482,7 @@
             <span class="meta-line" id="generatedSummary">尚未生成</span>
           </div>
           <div class="step-actions">
-            <button type="button" id="previewGenerated">预览生成结果</button>
-            <button type="button" id="publishWorkspace">发布为正式歌词</button>
+            <button type="button" id="previewGenerated">刷新结果预览</button>
           </div>
           <div class="generated-preview" id="generatedPreviewBox"></div>
         </section>
@@ -412,9 +490,9 @@
     </main>
   </div>
 
-  <dialog id="lyricsDialog">
+  <dialog id="lyricsDialog" aria-labelledby="lyricsDialogTitle">
     <form method="dialog" class="dialog-card">
-      <h2>编辑歌词 JSON</h2>
+      <h2 id="lyricsDialogTitle">编辑歌词 JSON</h2>
       <textarea id="lyricsEditor" spellcheck="false"></textarea>
       <p id="editorError" class="error-text"></p>
       <div class="button-row end">
@@ -424,7 +502,33 @@
     </form>
   </dialog>
 
-  <div class="toast" id="toast" hidden></div>
+  <dialog id="renameDialog" aria-labelledby="renameDialogTitle">
+    <form method="dialog" class="dialog-card" id="renameForm">
+      <h2 id="renameDialogTitle">重命名歌曲</h2>
+      <label class="field">
+        <span>新歌名</span>
+        <input id="renameSongInput" type="text" autocomplete="off" required>
+      </label>
+      <p id="renameError" class="error-text" aria-live="polite"></p>
+      <div class="button-row end">
+        <button value="cancel" type="submit">取消</button>
+        <button id="confirmRename" class="button-primary" type="button">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirmDialog" aria-labelledby="confirmDialogTitle">
+    <form method="dialog" class="dialog-card compact-dialog">
+      <h2 id="confirmDialogTitle">确认操作</h2>
+      <p id="confirmDialogMessage"></p>
+      <div class="button-row end">
+        <button value="cancel" type="submit">取消</button>
+        <button id="confirmDialogAction" class="button-danger" type="button">确认归档</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
   <script src="/web_static/app.js"></script>
   <script src="/web_static/netease.js"></script>
 </body>

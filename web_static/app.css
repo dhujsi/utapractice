@@ -1,8 +1,19 @@
 :root {
   color-scheme: light;
-  font-family: Inter, "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
-  background: #f7f8fb;
-  color: #182033;
+  font-family: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  background: #f4f6f9;
+  color: #172033;
+  --color-bg: #f4f6f9;
+  --color-surface: #ffffff;
+  --color-sidebar: #f0f3f7;
+  --color-text: #172033;
+  --color-muted: #667085;
+  --color-border: #dce2ea;
+  --color-accent: #e84f5b;
+  --color-accent-strong: #cf3f4b;
+  --color-danger: #b42318;
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 14px 34px rgba(16, 24, 40, 0.1);
   --safe-top: 0px;
   --safe-right: 0px;
   --safe-bottom: 0px;
@@ -40,13 +51,40 @@ textarea {
 }
 
 button {
-  border: 1px solid #d4d9e3;
-  background: #fff;
-  color: #182033;
-  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-radius: 10px;
   min-height: 40px;
   padding: 8px 12px;
   cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: 3px solid rgba(232, 79, 91, 0.2);
+  outline-offset: 2px;
+}
+
+.button-primary {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: #fff;
+  font-weight: 700;
+}
+
+.button-danger {
+  border-color: var(--color-danger);
+  background: var(--color-danger);
+  color: #fff;
 }
 
 .app-shell {
@@ -54,8 +92,8 @@ button {
   width: 100vw;
   height: 100dvh;
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  background: #fff;
+  grid-template-columns: 304px minmax(0, 1fr);
+  background: var(--color-bg);
   overflow: hidden;
 }
 
@@ -66,17 +104,65 @@ button {
 .sidebar {
   min-height: 0;
   overflow-y: auto;
-  background: #eef1f6;
-  border-right: 1px solid #dde3ed;
-  padding: calc(20px + var(--safe-top)) 20px calc(20px + var(--safe-bottom));
+  background: var(--color-sidebar);
+  border-right: 1px solid var(--color-border);
+  padding: 0 16px calc(24px + var(--safe-bottom));
+}
+
+.sidebar-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: 0 -2px;
+  padding: calc(20px + var(--safe-top)) 2px 16px;
+  background: var(--color-sidebar);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .brand {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  margin-bottom: 18px;
+  margin-bottom: 20px;
+}
+
+.brand-mark {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: #182033;
+  color: #fff;
+  font-size: 22px;
+  box-shadow: 0 6px 14px rgba(24, 32, 51, 0.16);
+}
+
+.brand-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.brand-eyebrow,
+.sidebar-eyebrow {
+  margin: 0 0 4px;
+  color: #8993a5;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.brand-copy h1 {
+  font-size: 22px;
+}
+
+.brand p {
+  margin: 4px 0 0;
+  color: var(--color-muted);
+  font-size: 12px;
 }
 
 h1,
@@ -94,8 +180,8 @@ h2 {
 }
 
 .panel {
-  border-top: 1px solid #cfd6e2;
-  padding: 24px 0;
+  border-top: 1px solid var(--color-border);
+  padding: 22px 0;
 }
 
 .panel:first-of-type {
@@ -113,24 +199,63 @@ h2 {
   margin-top: 16px;
 }
 
+.sidebar-body {
+  padding: 0 2px;
+}
+
+.sidebar-eyebrow {
+  margin-bottom: 8px;
+}
+
 .side-nav {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  margin-bottom: 18px;
+  gap: 4px;
 }
 
 .side-nav button {
-  min-height: 34px;
-  padding: 6px 8px;
-  border-radius: 999px;
-  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 46px;
+  padding: 8px 10px;
+  border-color: transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #475467;
+  font-size: 14px;
+  text-align: left;
+}
+
+.nav-item-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+}
+
+.nav-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  color: #8993a5;
+  font-size: 12px;
+}
+
+.nav-item-meta {
+  color: #98a2b3;
+  font-size: 11px;
 }
 
 .side-nav button.active {
   color: #fff;
   background: #182033;
   border-color: #182033;
+  box-shadow: 0 5px 12px rgba(24, 32, 51, 0.12);
+}
+
+.side-nav button.active .nav-icon,
+.side-nav button.active .nav-item-meta {
+  color: #d6dbe5;
 }
 
 .side-page {
@@ -141,6 +266,49 @@ h2 {
   display: block;
 }
 
+.panel-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.panel-kicker {
+  flex: 0 0 auto;
+  border: 1px solid #dce2ea;
+  border-radius: 999px;
+  color: #667085;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.song-status-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-top: 8px;
+  border-radius: 50%;
+  background: #12b76a;
+  box-shadow: 0 0 0 4px rgba(18, 183, 106, 0.12);
+}
+
+.song-panel-heading h2 {
+  overflow-wrap: anywhere;
+}
+
+.setting-group + .setting-group {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid #edf0f5;
+}
+
+.setting-group-title {
+  margin: 0;
+  color: #667085;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .field > span,
 .check-row span {
   font-size: 14px;
@@ -149,20 +317,31 @@ h2 {
 
 select,
 input[type="text"],
+input[type="search"],
+input[type="tel"],
 input[type="url"],
 input[type="password"],
 textarea {
   width: 100%;
-  border: 1px solid #d8dee9;
-  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
   background: #fff;
   min-height: 40px;
   padding: 8px 12px;
 }
 
+select:hover,
+input[type="text"]:hover,
+input[type="search"]:hover,
+input[type="url"]:hover,
+input[type="password"]:hover,
+textarea:hover {
+  border-color: #b9c2cf;
+}
+
 input[type="range"] {
   width: 100%;
-  accent-color: #ff4b55;
+  accent-color: var(--color-accent);
 }
 
 input[type="file"] {
@@ -226,8 +405,86 @@ button:disabled {
 
 output {
   justify-self: center;
-  color: #ff4b55;
+  color: var(--color-accent);
   font-size: 13px;
+}
+
+.control-disclosure {
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  margin-top: 14px;
+  background: #fbfcfe;
+}
+
+.control-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 8px 12px;
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.control-disclosure > summary::marker {
+  color: #98a2b3;
+}
+
+.disclosure-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.disclosure-title strong {
+  font-size: 13px;
+}
+
+.disclosure-title small {
+  color: #8993a5;
+  font-size: 11px;
+}
+
+.control-disclosure > summary > output {
+  flex: 0 0 auto;
+  min-width: 28px;
+  color: var(--color-accent);
+  font-weight: 700;
+  text-align: right;
+}
+
+.disclosure-content {
+  border-top: 1px solid #e7ebf1;
+  padding: 14px 12px 12px;
+}
+
+.disclosure-content .field {
+  margin-top: 0;
+}
+
+.range-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3px;
+  color: #98a2b3;
+  font-size: 11px;
+}
+
+.disclosure-content > output {
+  display: block;
+  margin-top: 8px;
+  text-align: center;
+}
+
+.apk-only-panel {
+  border-top: 1px solid var(--color-border);
+  padding: 18px 0 0;
+  background: transparent;
+}
+
+.apk-only-panel.control-disclosure > summary {
+  padding: 8px 10px;
 }
 
 .segmented {
@@ -244,8 +501,8 @@ output {
 }
 
 .segmented button.active {
-  background: #ff4b55;
-  border-color: #ff4b55;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
   color: white;
 }
 
@@ -329,9 +586,10 @@ output {
 
 .job-item {
   position: relative;
-  border: 1px solid #d0d5dd;
-  border-radius: 8px;
-  padding: 10px 34px 10px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 14px;
 }
 
 .job-title {
@@ -339,11 +597,19 @@ output {
   display: flex;
   gap: 8px;
   justify-content: space-between;
+  padding-right: 44px;
 }
 
 .job-title span {
+  flex: 0 0 auto;
   color: #667085;
   font-size: 12px;
+  white-space: nowrap;
+}
+
+.job-title strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .job-item.done .job-title span {
@@ -370,6 +636,14 @@ output {
   padding-left: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.job-latest-step {
+  margin: 8px 0 0;
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .job-step-line + .job-step-line {
@@ -409,32 +683,29 @@ output {
 
 .job-delete-button {
   position: absolute;
-  right: 6px;
-  top: 6px;
-  width: 28px;
-  min-height: 28px;
+  right: 10px;
+  top: 9px;
+  min-height: 30px;
   border: 0;
-  border-radius: 50%;
+  border-radius: 8px;
   background: transparent;
   color: #98a2b3;
-  font-size: 20px;
+  font-size: 12px;
   line-height: 1;
-  padding: 0;
+  padding: 4px 6px;
 }
 
 .job-item .job-delete-button {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  min-height: 28px;
+  width: auto;
+  height: 30px;
+  min-height: 30px;
   margin-top: 0;
-  padding: 0;
+  padding: 4px 6px;
 }
 
 .job-item .job-retry-button {
-  border-color: #ff4b55;
-  color: #ff4b55;
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
 .job-item .job-retry-button:hover {
@@ -453,7 +724,7 @@ output {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: #ff4b55;
+  background: var(--color-accent);
 }
 
 .player {
@@ -464,7 +735,36 @@ output {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #fff;
+  background: var(--color-surface);
+}
+
+.practice-header {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 18px;
+  justify-content: space-between;
+  min-height: 68px;
+  padding: 14px clamp(24px, 6vw, 88px);
+  border-bottom: 1px solid #edf0f5;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.practice-header div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.practice-header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.practice-header span {
+  color: var(--color-muted);
+  font-size: 12px;
 }
 
 .player-view {
@@ -477,7 +777,16 @@ output {
 
 .empty-state {
   margin: auto;
-  color: #667085;
+  color: var(--color-muted);
+  display: grid;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+}
+
+.empty-state strong {
+  color: var(--color-text);
+  font-size: 18px;
 }
 
 .lyrics {
@@ -518,6 +827,14 @@ output {
   color: #9aa3b2;
   display: inline-block;
   font-size: 0.86em;
+  line-height: 1.55;
+}
+
+.lyric-line .roman-text {
+  color: #718096;
+  display: inline-block;
+  font-size: 0.9em;
+  letter-spacing: 0.02em;
   line-height: 1.55;
 }
 
@@ -565,7 +882,7 @@ ruby rt {
   min-height: 0;
   overflow-y: auto;
   padding: 56px clamp(20px, 5vw, 72px) 40px;
-  background: #fff;
+  background: var(--color-bg);
 }
 
 .workspace-header {
@@ -587,15 +904,17 @@ ruby rt {
 }
 
 .workspace-section {
-  border-top: 1px solid #eaecf0;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
   margin: 0 auto;
   max-width: 1280px;
-  padding: 22px 0;
+  padding: 24px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .workspace-section:first-of-type {
-  border-top: 0;
-  padding-top: 0;
+  padding-top: 24px;
 }
 
 /* 统一搜索页：搜索歌词 + 搜索歌曲（网易云）合并在同一页 */
@@ -604,7 +923,7 @@ ruby rt {
   min-height: 0;
   overflow-y: auto;
   padding: 56px clamp(20px, 5vw, 72px) 40px;
-  background: #fff;
+  background: var(--color-bg);
 }
 
 .search-workspace-header {
@@ -626,10 +945,10 @@ ruby rt {
 }
 
 .search-panel {
-  border-top: 1px solid #eaecf0;
-  margin: 0 auto;
-  max-width: 1280px;
-  padding: 22px 0;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  box-shadow: var(--shadow-sm);
+  background: var(--color-surface);
 }
 
 /* 歌库右栏列表 */
@@ -638,7 +957,15 @@ ruby rt {
   min-height: 0;
   overflow-y: auto;
   padding: 56px clamp(20px, 5vw, 72px) 40px;
-  background: #fff;
+  background: var(--color-bg);
+}
+
+.library-search {
+  width: min(320px, 100%);
+}
+
+.library-search input {
+  width: 100%;
 }
 
 .library-list {
@@ -656,9 +983,10 @@ ruby rt {
 }
 
 .library-item {
-  background: #fff;
-  border: 1px solid #d0d5dd;
-  border-radius: 8px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm);
   display: flex;
   align-items: stretch;
   min-height: 0;
@@ -676,7 +1004,7 @@ ruby rt {
   padding: 10px 12px;
   text-align: left;
   border: 0;
-  border-radius: 8px 0 0 8px;
+  border-radius: 12px 0 0 12px;
   background: #fff;
   overflow: hidden;
 }
@@ -695,14 +1023,14 @@ ruby rt {
 .library-item-actions {
   display: flex;
   align-items: stretch;
-  gap: 8px;
+  gap: 6px;
   flex: 0 0 auto;
   padding: 10px 12px 10px 0;
 }
 
 .library-item-actions button {
   min-height: 0;
-  min-width: 44px;
+  min-width: 58px;
   padding: 6px 12px;
 }
 
@@ -715,8 +1043,8 @@ ruby rt {
 }
 
 .library-add-row button.active {
-  background: #ff4b55;
-  border-color: #ff4b55;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
   color: #fff;
 }
 
@@ -731,7 +1059,12 @@ ruby rt {
 }
 
 .search-panel + .search-panel {
-  margin-top: 10px;
+  margin-top: 16px;
+}
+
+.workspace-section + .workspace-section,
+.netease-panel-fold + .workspace-section {
+  margin-top: 16px;
 }
 
 .search-panel .field {
@@ -754,7 +1087,7 @@ ruby rt {
 }
 
 .search-fold > summary:hover {
-  color: #ff4b55;
+  color: var(--color-accent);
 }
 
 .search-fold[open] > summary {
@@ -770,10 +1103,40 @@ ruby rt {
 }
 
 .search-view .netease-download-options {
-  grid-template-columns: minmax(180px, 280px) auto auto;
+  grid-template-columns: minmax(160px, 240px) minmax(180px, 1fr) minmax(170px, auto);
   align-items: end;
   gap: 16px;
   margin-top: 16px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .button-primary:hover {
+    border-color: var(--color-accent-strong);
+    background: var(--color-accent-strong);
+    color: #fff;
+  }
+
+  .button-danger:hover {
+    border-color: #912018;
+    background: #912018;
+    color: #fff;
+  }
+}
+
+@media (max-width: 1120px) and (min-width: 761px) {
+  .search-results-grid,
+  .source-editor-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .search-results-grid .search-results,
+  .search-results-grid .netease-results {
+    height: 280px;
+  }
+
+  .search-view .netease-download-options {
+    grid-template-columns: 1fr;
+  }
 }
 
 .search-view .netease-download-options .check-row {
@@ -864,7 +1227,7 @@ ruby rt {
   border: 1px solid #e1e6ee;
   border-radius: 12px;
   padding: 12px 14px;
-  background: #fbfcfe;
+  background: #f8fafc;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -881,7 +1244,7 @@ ruby rt {
 /* 搜索框 + 来源 + 按钮同一行 */
 .search-input-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.4fr) minmax(160px, 0.6fr) auto;
+  grid-template-columns: minmax(0, 1.4fr) minmax(140px, 0.55fr) minmax(96px, auto);
   align-items: end;
   gap: 14px;
 }
@@ -889,15 +1252,15 @@ ruby rt {
 .search-input-row .search-go-button {
   min-height: 40px;
   padding: 8px 22px;
-  background: #ff4b55;
-  border-color: #ff4b55;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
   color: #fff;
   font-weight: 700;
 }
 
 .search-input-row .search-go-button:hover {
-  background: #e63b45;
-  border-color: #e63b45;
+  background: var(--color-accent-strong);
+  border-color: var(--color-accent-strong);
 }
 
 .search-advanced {
@@ -962,8 +1325,8 @@ ruby rt {
 }
 
 .search-result.active {
-  border-color: #ff4b55;
-  box-shadow: 0 0 0 1px #ff4b55 inset;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent) inset;
 }
 
 .search-result span,
@@ -1081,16 +1444,82 @@ ruby rt {
 }
 
 dialog {
-  border: 0;
-  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
   padding: 0;
   width: min(900px, calc(100vw - 32px));
+  box-shadow: var(--shadow-md);
+}
+
+dialog::backdrop {
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(2px);
 }
 
 .dialog-card {
   display: grid;
   gap: 14px;
-  padding: 18px;
+  padding: 22px;
+}
+
+.compact-dialog {
+  max-width: 460px;
+}
+
+.compact-dialog p {
+  margin: 0;
+  color: var(--color-muted);
+  line-height: 1.6;
+}
+
+.settings-disclosure > summary {
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 700;
+  padding: 2px 0;
+}
+
+.settings-disclosure[open] > summary {
+  margin-bottom: 18px;
+}
+
+.settings-disclosure .section-heading {
+  display: none;
+}
+
+.settings-disclosure form {
+  margin: 0;
+}
+
+.sidebar .settings-disclosure {
+  border-top: 1px solid var(--color-border);
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  border-radius: 0;
+  margin: 0;
+  padding: 20px 0;
+  background: transparent;
+}
+
+.empty-copy {
+  margin: auto;
+  padding: 28px 12px;
+  color: var(--color-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 #lyricsEditor {
@@ -1164,6 +1593,15 @@ dialog {
     padding: calc(52px + var(--safe-top)) 18px calc(104px + var(--safe-bottom));
   }
 
+  .practice-header {
+    min-height: 62px;
+    padding: calc(12px + var(--safe-top)) 16px 12px 64px;
+  }
+
+  .practice-header > span {
+    display: none;
+  }
+
   .workspace-view {
     padding: calc(56px + var(--safe-top)) 16px calc(28px + var(--safe-bottom));
   }
@@ -1206,6 +1644,37 @@ dialog {
   .search-preview-layout,
   .search-results-grid {
     grid-template-columns: 1fr;
+  }
+
+  .workspace-section,
+  .workspace-section:first-of-type {
+    border-radius: 14px;
+    padding: 18px;
+  }
+
+  .library-workspace-header {
+    gap: 14px;
+  }
+
+  .library-search {
+    width: 100%;
+  }
+
+  .library-item {
+    display: grid;
+  }
+
+  .library-item-main {
+    border-radius: 12px 12px 0 0;
+  }
+
+  .library-item-actions {
+    border-top: 1px solid var(--color-border);
+    padding: 8px 10px 10px;
+  }
+
+  .library-item-actions button {
+    flex: 1 1 0;
   }
 
   .search-input-row {
@@ -1280,7 +1749,7 @@ dialog {
   }
 
   .floating-controls button.active {
-    background: #ff4b55;
+    background: var(--color-accent);
   }
 
   #playButton {

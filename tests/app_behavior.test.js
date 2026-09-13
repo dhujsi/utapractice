@@ -39,7 +39,8 @@ test("APK audio playback uses a loopback HTTP source instead of WebView intercep
   assert.doesNotMatch(androidMain, /LocalAudioProvider\.audioUri/);
   assert.match(appJs, /function audioSourceUrl\(song, key\)/);
   assert.match(appJs, /window\.UtaPracticeAndroid\.audioUrl\(song\.name, String\(key\)\)/);
-  assert.match(appJs, /els\.audio\.src = audioSourceUrl\(state\.current, key\);/);
+  assert.match(appJs, /const sourceUrl = audioSourceUrl\(state\.current, key\);/);
+  assert.match(appJs, /els\.audio\.src = sourceUrl;/);
 });
 
 test("mobile A-B button cycles through A, B, cancel, then A again", () => {
@@ -147,7 +148,7 @@ test("library upload UI exposes statuses and manual audio target binding", () =>
 });
 
 test("audio upload endpoint can attach one arbitrary-named file to a lyric-only song", () => {
-  assert.match(webApp, /target_song = sanitize_filename\(request\.form\.get\("target_song", ""\)\.strip\(\)\)/);
+  assert.match(webApp, /target_song = existing_song_name\(request\.form\.get\("target_song", ""\)\.strip\(\)\)/);
   assert.match(webApp, /if target_song and len\(files\) != 1:/);
   assert.match(webApp, /if not song\["lyrics_path"\]:/);
   assert.match(webApp, /if song\["audio_path"\] and audio_compatibility\(song\["audio_path"\]\)\["playable"\]:/);
@@ -157,12 +158,14 @@ test("audio upload endpoint can attach one arbitrary-named file to a lyric-only 
 
 test("lyrics upload and typed lyrics can attach to an audio-only song", () => {
   assert.match(webApp, /@app\.post\("\/api\/upload\/lyrics-text"\)/);
-  assert.match(webApp, /target_song = sanitize_filename\(request\.form\.get\("target_song", ""\)\.strip\(\)\)/);
+  assert.match(webApp, /target_song = existing_song_name\(request\.form\.get\("target_song", ""\)\.strip\(\)\)/);
   assert.match(webApp, /payload\.get\("target_song"/);
   assert.match(webApp, /lyrics_type = str\(payload\.get\("lyrics_type", "lrc"\)\)/);
   assert.match(webApp, /parse_lrc\(lyrics_text\)/);
   assert.match(webApp, /json\.loads\(lyrics_text\)/);
   assert.match(webApp, /Target song already has lyrics/);
+  assert.match(webApp, /save_song_lyrics\(song_name, lyrics, metadata\)/);
+  assert.match(webApp, /"artists": document\["artists"\]/);
   assert.match(appJs, /\/api\/upload\/lyrics-text/);
   assert.match(appJs, /renderLyricsTargetOptions/);
 });
@@ -203,6 +206,11 @@ test("lyrics display has a separate ruby toggle and no translation-only mode", (
   assert.doesNotMatch(indexHtml, /仅译文/);
   assert.match(indexHtml, /id="rubyToggle"/);
   assert.match(indexHtml, /假名标注/);
+  assert.match(indexHtml, /value="original_roman"/);
+  assert.match(indexHtml, /原文 \+ 罗马音/);
+  assert.match(appJs, /state\.displayMode === "original_roman"/);
+  assert.match(appJs, /class="roman-text"/);
+  assert.match(indexHtml, /<details class="control-disclosure" id="keyField" hidden>/);
   assert.match(indexHtml, />备注<\/span>/);
   assert.match(appJs, /showRuby: true/);
   assert.match(appJs, /function stripRubyMarkup\(/);
@@ -220,19 +228,28 @@ test("APK optional sync panel does not expose cloud config loading", () => {
   assert.match(indexHtml, /id="apkSyncAll"/);
 });
 
-test("completed workspace jobs can reopen generated lyrics for preview and publishing", () => {
-  assert.match(appJs, /function workspaceJobReadyForPublish\(job\)/);
+test("completed workspace jobs can reopen generated lyrics after direct JSON write", () => {
+  assert.match(appJs, /function workspaceJobReadyForOpen\(job\)/);
   assert.match(appJs, /async function openWorkspaceJob\(job\)/);
   assert.match(appJs, /setPage\("search"\)/);
   assert.match(appJs, /await loadWorkspace\(job\.song_name\)/);
   assert.match(appJs, /await previewGenerated\(\{ refreshWorkspace: true \}\)/);
-  assert.match(appJs, /button\.textContent = "打开工作源"/);
-  assert.match(appJs, /button\.textContent = "发布正式歌词"/);
+  assert.match(appJs, /button\.textContent = "打开生成结果"/);
+  assert.doesNotMatch(appJs, /button\.textContent = "发布正式歌词"/);
 });
 
-test("legacy lyric conversion jobs are labeled as already published", () => {
-  assert.match(appJs, /旧版任务已直接写入正式歌词/);
+test("legacy lyric conversion jobs are labeled as already completed", () => {
+  assert.match(appJs, /历史任务已完成，结果已写入正式歌词/);
+  assert.match(appJs, /历史任务（旧流程）/);
   assert.match(appJs, /job\.type !== "generate_ruby_from_rows"/);
+});
+
+test("APK rename and persistence follow the same durable local contract", () => {
+  assert.match(androidMain, /handleRenamePost\(/);
+  assert.match(androidMain, /renameJobSong\(oldName, newName\)/);
+  assert.match(androidMain, /copyLocalFile\(audioFile\(oldName\), audioFile\(newName\)\)/);
+  assert.match(androidMain, /output\.getFD\(\)\.sync\(\)/);
+  assert.match(androidMain, /replaceFile\(temporary, file\)/);
 });
 
 test("APK implements local-first JSON write API through Android bridge", () => {
@@ -294,8 +311,10 @@ test("APK generator workspace APIs are local and do not require the optional syn
   assert.match(androidMain, /workspaceFile\(String name\)/);
   assert.match(androidMain, /jobsFile\(\)/);
   assert.match(androidMain, /handleWorkspaceSavePost\(/);
-  assert.match(androidMain, /handleWorkspacePublishPost\(/);
+  assert.doesNotMatch(androidMain, /handleWorkspacePublishPost\(/);
   assert.match(androidMain, /handleConvertJobPost\(/);
+  assert.match(androidMain, /handleConvertJobRetry\(/);
+  assert.match(androidMain, /path\.endsWith\("\/retry"\)/);
   assert.match(androidMain, /runLocalRubyJob\(/);
   assert.match(androidMain, /performLocalRubyGeneration\(/);
   assert.match(androidMain, /localJobsListJson\(/);
@@ -373,12 +392,25 @@ test("APK sync refreshes stale unplayable local audio state from the server", ()
   assert.match(androidMain, /summary\.put\("audio_size", detail\.optLong\("audio_size", 0\)\)/);
 });
 
+test("APK sync uses a versioned manifest and defers audio until playback", () => {
+  assert.match(webApp, /@app\.get\("\/api\/sync\/manifest"\)/);
+  assert.match(webApp, /"document_version": file_version\(lyrics_path\)/);
+  assert.match(webApp, /"audio_version": file_version\(audio_path\)/);
+  assert.match(androidMain, /baseUrl \+ "\/api\/sync\/manifest"/);
+  assert.match(androidMain, /Executors\.newFixedThreadPool\(Math\.min\(3/);
+  assert.match(androidMain, /private synchronized void upsertLocalSong\(/);
+  assert.match(androidMain, /public void ensureAudio\(String songName, String keyText\)/);
+  assert.match(androidMain, /正在按需下载音频/);
+  assert.match(appJs, /remoteAudioAvailable\(song\)/);
+  assert.match(appJs, /UtaPracticeAndroid\.ensureAudio/);
+});
+
 test("APK sync completion reloads the current song and exposes a bumped build", () => {
   assert.match(appJs, /if \(detail\.channel === "sync" && detail\.status === "done"\) \{[\s\S]*refreshSongsAfterLibraryMutation\(state\.current\?\.name \|\| ""\)/);
   assert.match(androidMain, /"同步完成，歌库已刷新，可离线使用"/);
   assert.doesNotMatch(androidMain, /刷新歌库后可离线使用/);
-  assert.match(androidBuildGradle, /versionCode 7/);
-  assert.match(androidBuildGradle, /versionName "0\.1\.6"/);
+  assert.match(androidBuildGradle, /versionCode 9/);
+  assert.match(androidBuildGradle, /versionName "0\.1\.8"/);
 });
 
 test("APK lyric search mirrors all web providers without the optional sync backend", () => {
@@ -460,6 +492,12 @@ test("APK proxies netease bridge calls through Java and derives a default bridge
   assert.match(androidMain, /public String getNeteaseBridgeUrl\(\)/);
   assert.match(androidMain, /public void setNeteaseBridgeUrl\(String value\)/);
   assert.match(androidMain, /":8503"/);
+  assert.match(androidMain, /neteaseBridgeFetch\(method, pathAndQuery, null\)/);
+  assert.doesNotMatch(androidMain, /neteaseBridgeFetch\("GET", pathAndQuery, null\)/);
+  assert.match(androidBuildGradle, /include "app\.css", "netease\.css", "app\.js"/);
+  assert.doesNotMatch(androidMain, /handleWorkspacePublishPost/);
+  assert.match(androidMain, /detail\.put\("lyrics", generated\)/);
+  assert.match(androidMain, /line\.put\("roman", source\.optString\("roman", ""\)\)/);
 });
 
 test("failed or stopped lyric generation jobs expose a retry action that re-queues them", () => {
@@ -469,7 +507,7 @@ test("failed or stopped lyric generation jobs expose a retry action that re-queu
   assert.match(webApp, /Only failed or stopped jobs can be retried/);
   assert.match(webApp, /job\.get\("payload"\)/);
   assert.match(webApp, /job\["status"\] = "queued"/);
-  assert.match(webApp, /threading\.Thread\(target=run_convert_job_v2, args=\(job_id,\)/);
+  assert.match(webApp, /threading\.Thread\(target=run_generation_job, args=\(job_id,\)/);
   assert.match(appJs, /job\.status === "failed" \|\| job\.status === "stopped"/);
   assert.match(appJs, /`\/api\/convert-jobs\/\$\{encodeURIComponent\(job\.id\)\}\/retry`/);
   assert.match(appJs, /textContent = "重试"/);
@@ -511,13 +549,14 @@ test("one search queries lyric sources and NetEase songs together on the same pa
   assert.match(neteaseJs, /async function search\(queryOverride\)/);
 });
 
-test("library renders as a right-column list with edit and delete actions per song", () => {
+test("library renders as a searchable list with edit, rename and archive actions", () => {
   assert.match(indexHtml, /id="libraryView"/);
   assert.match(indexHtml, /id="libraryList"/);
   assert.match(appJs, /function renderLibraryList\(\)/);
   assert.match(appJs, /className = "library-item"/);
-  assert.match(appJs, /editButton\.textContent = "改"/);
-  assert.match(appJs, /deleteButton\.textContent = "删"/);
+  assert.match(appJs, /editButton\.textContent = "编辑"/);
+  assert.match(appJs, /renameButton\.textContent = "重命名"/);
+  assert.match(appJs, /deleteButton\.textContent = "归档"/);
   assert.match(appJs, /`\/api\/songs\/\$\{encodeURIComponent\(song\.name\)\}\/delete`/);
   assert.doesNotMatch(indexHtml, /id="librarySongSelect"/);
   assert.doesNotMatch(appJs, /libraryLoadSong/);
@@ -557,8 +596,9 @@ test("searches auto-select the first lyric and NetEase result", () => {
 
 test("NetEase download offers optional AI ruby generation that seeds a workspace", () => {
   assert.match(indexHtml, /id="neteaseDownloadWithAi"/);
-  assert.match(indexHtml, /下载后 AI 生成 ruby JSON/);
-  assert.match(neteaseJs, /with_lyrics: withAi/);
+  assert.match(indexHtml, /下载后生成注音歌词/);
+  assert.match(neteaseJs, /album: song\.album \|\| ""/);
+  assert.doesNotMatch(neteaseJs, /with_lyrics/);
   assert.match(neteaseJs, /\/api\/lyrics-workspace\/\$\{encodeURIComponent\(payload\.song_name\)\}\/from-song/);
   assert.match(neteaseJs, /"generate_ruby_from_rows"/);
   assert.match(webApp, /@app\.post\("\/api\/lyrics-workspace\/<path:name>\/from-song"\)/);
@@ -568,7 +608,15 @@ test("NetEase download offers optional AI ruby generation that seeds a workspace
 
 test("selected search result adopts the actual song title instead of the search keyword", () => {
   assert.match(appJs, /if \(result\.title\) els\.workspaceSongName\.value = result\.title;/);
-  assert.match(appJs, /工作源歌名用实际曲名，而不是搜索词/);
+  assert.match(appJs, /确保草稿、任务和正式歌词名称一致/);
+});
+
+test("only the canonical workspace generation flow can create AI jobs", () => {
+  assert.match(webApp, /def run_generation_job\(job_id\):/);
+  assert.match(webApp, /job_type != "generate_ruby_from_rows"/);
+  assert.doesNotMatch(webApp, /@app\.post\("\/api\/convert-lyrics/);
+  assert.doesNotMatch(webApp, /def perform_lyrics_conversion/);
+  assert.doesNotMatch(webApp, /run_convert_job_v2/);
 });
 
 test("downloading an existing song compares file info and skips or overwrites instead of failing", () => {
@@ -580,6 +628,20 @@ test("downloading an existing song compares file info and skips or overwrites in
   assert.match(neteaseJs, /payload\.skipped\)/);
   assert.match(neteaseJs, /payload\.overwritten\)/);
   assert.match(neteaseJs, /populateWorkspace\(workspace\)/);
+});
+
+test("NetEase lyrics use one canonical JSON file and direct generation output", () => {
+  assert.doesNotMatch(neteaseBridge, /def download_song\([^)]*with_lyrics/);
+  assert.match(neteaseBridge, /document = normalize_document\(/);
+  assert.match(neteaseBridge, /document\["lyrics"\] = merged/);
+  assert.match(neteaseBridge, /json_save\(document_path, document\)/);
+  assert.match(neteaseBridge, /merge_lyrics_single_file\(original_lrc, translation_lrc, roman_lrc\)/);
+  assert.match(neteaseBridge, /SONG_DIR \/ f"\{stem\}\.json"/);
+  assert.doesNotMatch(neteaseBridge, /f"\{stem\}\.zh\.lrc"\)\.write_text/);
+  assert.doesNotMatch(neteaseBridge, /f"\{stem\}\.roma\.lrc"\)\.write_text/);
+  assert.match(webApp, /生成结果已直接写入正式 JSON/);
+  assert.doesNotMatch(indexHtml, /发布正式歌词/);
+  assert.doesNotMatch(appJs, /lyrics-workspace\/.*\/publish/);
 });
 
 test("AI settings sit at the top of the sidebar search panel", () => {
