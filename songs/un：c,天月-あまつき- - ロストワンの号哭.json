@@ -1,4 +1,10 @@
-[
+{
+  "schema_version": 1,
+  "title": "ロストワンの号哭",
+  "artists": ["un：c", "天月-あまつき-"],
+  "album": "",
+  "source": {},
+  "lyrics": [
   {
     "time": 27.8,
     "original_html": "<ruby>刃渡<rt>はわた</rt></ruby>り<ruby>数<rt>すう</rt></ruby>センチの<ruby>不信感<rt>ふしんかん</rt></ruby>が <br><ruby>挙<rt>あ</rt></ruby>げ<ruby>句<rt>く</rt></ruby>の<ruby>果<rt>は</rt></ruby>て<ruby>静脈<rt>じょうみゃく</rt></ruby>を<ruby>刺<rt>さ</rt></ruby>しちゃって",
@@ -134,4 +140,5 @@
     "original_html": "どなたに<ruby>伺<rt>うかが</rt></ruby>えばいいんですか <br>おいどうすんだよ　もうどうだっていいや",
     "translation": "又要向谁问才行能知道啊<br>要怎样才好啊 已经怎样都好了吧"
   }
-]
+  ]
+}

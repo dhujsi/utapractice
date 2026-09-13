@@ -1,4 +1,10 @@
-[
+{
+  "schema_version": 1,
+  "title": "君が好きだと叫びたい",
+  "artists": ["BAAD"],
+  "album": "",
+  "source": {},
+  "lyrics": [
   {
     "time": 25.983,
     "original_html": "<ruby>眩<rt>まぶ</rt></ruby>しい<ruby>陽差<rt>ひざ</rt></ruby>しを<ruby>背<rt>せ</rt></ruby>に",
@@ -224,4 +230,5 @@
     "original_html": "I wanna cry for you",
     "translation": ""
   }
-]
+  ]
+}

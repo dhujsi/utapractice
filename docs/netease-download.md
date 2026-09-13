@@ -19,7 +19,7 @@ UtaPractice 的歌库页可以通过本地桥接服务搜索网易云，并把�
 
 默认下载音质是 `exhigh`（极高 / 320 kbps）。可切换无损或 Hi-Res；实际可用音质取决于账号权益和歌曲版权。下载时优先调用网易云客户端的 `/song/download/url/v1` 接口取得真实音频地址，再把音频写入本地歌库。
 
-网易云下载区只负责音频，不再同时保存 LRC。歌词统一从“生成歌词”工作页搜索、预览和生成；该工作页默认使用网易云歌词来源。
+网易云下载会同时请求歌词，并直接合并保存为 `songs/<存储键>.json` SongDocument；文档内保存实际歌名、歌手、专辑和网易云来源，不会生成新的 `.lrc`、`.zh.lrc` 或 `.roma.lrc`。勾选“下载后生成注音歌词”时，下载完成后继续创建 AI 任务，成功后原子替换同一个正式 JSON 的 `lyrics` 字段。
 
 本地非 Docker 运行时，`web_app.py` 默认把 `/api/netease/*` 代理到 `http://127.0.0.1:8503`；如需指向其它地址，设置环境变量 `NETEASE_BRIDGE_BASE`。Docker 模式下 compose 已自动设为 `http://netease-bridge:8503`。
 

@@ -1,4 +1,6 @@
 import json
+import logging
+import math
 import mimetypes
 import os
 import re
@@ -13,7 +15,6 @@ import html
 from html.parser import HTMLParser
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
-from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -24,14 +25,17 @@ import soundfile as sf
 from flask import Flask, jsonify, make_response, render_template, request, send_file
 from openai import OpenAI
 
+from song_document import artist_text, document_metadata, infer_legacy_metadata, lyrics_from_document, normalize_document
+
 
 BASE_DIR = Path(__file__).resolve().parent
-SONG_DIR = BASE_DIR / "songs"
-ARCHIVE_DIR = BASE_DIR / "songs_archived"
-DB_PATH = BASE_DIR / "song_db.json"
-GENERATED_DIR = BASE_DIR / "generated"
-SETTINGS_PATH = BASE_DIR / "settings.local.json"
-JOBS_PATH = BASE_DIR / "lyrics_jobs.json"
+DATA_DIR = Path(os.environ.get("DATA_DIR", str(BASE_DIR))).expanduser().resolve()
+SONG_DIR = DATA_DIR / "songs"
+ARCHIVE_DIR = DATA_DIR / "songs_archived"
+DB_PATH = DATA_DIR / "song_db.json"
+GENERATED_DIR = DATA_DIR / "generated"
+SETTINGS_PATH = DATA_DIR / "settings.local.json"
+JOBS_PATH = DATA_DIR / "lyrics_jobs.json"
 DEFAULT_MODEL = "deepseek-v4-pro"
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".m4a"}
@@ -44,17 +48,20 @@ SEARCH_AGGREGATE_TIMEOUT_SECONDS = 7
 # 规避跨源 fetch、HTTPS 明文端口和 WebView CORS 限制（方案 C）。
 NETEASE_BRIDGE_BASE = os.environ.get("NETEASE_BRIDGE_BASE", "http://127.0.0.1:8503").rstrip("/")
 NETEASE_PROXY_TIMEOUT = float(os.environ.get("NETEASE_PROXY_TIMEOUT", "130"))
+CORS_ALLOW_ORIGIN = os.environ.get("CORS_ALLOW_ORIGIN", "").strip()
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(1024 * 1024 * 1024)))
 
-SONG_DIR.mkdir(exist_ok=True)
-ARCHIVE_DIR.mkdir(exist_ok=True)
-GENERATED_DIR.mkdir(exist_ok=True)
+SONG_DIR.mkdir(parents=True, exist_ok=True)
+ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__, static_folder="web_static", template_folder="templates")
+app.config.update(MAX_CONTENT_LENGTH=MAX_UPLOAD_BYTES, JSON_SORT_KEYS=False)
 
 
 def add_api_cors_headers(response):
-    if request.path.startswith("/api/"):
-        response.headers["Access-Control-Allow-Origin"] = "*"
+    if request.path.startswith("/api/") and CORS_ALLOW_ORIGIN:
+        response.headers["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Max-Age"] = "86400"
@@ -71,6 +78,21 @@ def handle_api_preflight():
 @app.after_request
 def apply_api_cors(response):
     return add_api_cors_headers(response)
+
+
+@app.errorhandler(413)
+def upload_too_large(_error):
+    if request.path.startswith("/api/"):
+        limit_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
+        return jsonify({"error": f"上传文件过大，单次请求上限为 {limit_mb} MB"}), 413
+    return "Payload too large", 413
+
+
+@app.errorhandler(ValueError)
+def invalid_api_input(error):
+    if request.path.startswith("/api/"):
+        return jsonify({"error": str(error)}), 400
+    return "Invalid request", 400
 
 
 def _netease_bridge_forward(subpath):
@@ -118,35 +140,80 @@ def netease_bridge_root():
 def netease_bridge_proxy(subpath):
     return _netease_bridge_forward(subpath or "")
 jobs_lock = threading.Lock()
+data_lock = threading.RLock()
 audio_probe_cache = {}
+
+logger = logging.getLogger("utapractice")
 
 
 def sanitize_filename(filename):
-    return re.sub(r'[\\/*?:"<>|]', "_", filename)
+    value = unicodedata.normalize("NFKC", str(filename or "")).strip()
+    value = re.sub(r'[\\/*?:"<>|\x00-\x1f\x7f]', "_", value)
+    value = re.sub(r"\s+", " ", value).strip(" .")
+    value = value[:180]
+    return value if any(character.isalnum() for character in value) else ""
+
+
+def normalized_name_key(value):
+    return unicodedata.normalize("NFKC", str(value or "")).casefold()
+
+
+def existing_song_name(value):
+    requested = str(value or "").strip()
+    songs = find_available_songs()
+    if requested in songs:
+        return requested
+    safe = sanitize_filename(value)
+    if not safe:
+        return ""
+    if safe in songs:
+        return safe
+    matches = [
+        name
+        for name in songs
+        if normalized_name_key(sanitize_filename(name)) == normalized_name_key(safe)
+    ]
+    return matches[0] if len(matches) == 1 else safe
+
+
+def atomic_write_json(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def load_db():
-    if DB_PATH.exists():
-        with DB_PATH.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+    with data_lock:
+        if DB_PATH.exists():
+            with DB_PATH.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        return {}
 
 
 def save_db(db_data):
-    with DB_PATH.open("w", encoding="utf-8") as f:
-        json.dump(db_data, f, indent=2, ensure_ascii=False)
+    with data_lock:
+        atomic_write_json(DB_PATH, db_data)
 
 
 def load_settings():
-    if SETTINGS_PATH.exists():
-        with SETTINGS_PATH.open("r", encoding="utf-8-sig") as f:
-            return json.load(f)
-    return {"base_url": "", "api_key": "", "model": DEFAULT_MODEL}
+    with data_lock:
+        if SETTINGS_PATH.exists():
+            with SETTINGS_PATH.open("r", encoding="utf-8-sig") as f:
+                return json.load(f)
+        return {"base_url": "", "api_key": "", "model": DEFAULT_MODEL}
 
 
 def save_settings(settings):
-    with SETTINGS_PATH.open("w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2, ensure_ascii=False)
+    with data_lock:
+        atomic_write_json(SETTINGS_PATH, settings)
 
 
 def now_iso():
@@ -161,8 +228,7 @@ def load_jobs():
 
 
 def save_jobs(jobs):
-    with JOBS_PATH.open("w", encoding="utf-8") as f:
-        json.dump(jobs, f, indent=2, ensure_ascii=False)
+    atomic_write_json(JOBS_PATH, jobs)
 
 
 def public_job(job):
@@ -234,13 +300,45 @@ def find_available_songs():
             continue
         if path.name.endswith(".lyrics_source.json"):
             continue
+        if path.name.endswith(".zh.lrc") or path.name.endswith(".roma.lrc"):
+            # Legacy NetEase companion files belong to the base song.
+            continue
         if path.stem.startswith("temp_"):
             continue
-        item = songs.setdefault(path.stem, {"name": path.stem, "audio_path": None, "lyrics_path": None})
+        item = songs.setdefault(
+            path.stem,
+            {
+                "name": path.stem,
+                "title": path.stem,
+                "artists": [],
+                "artist": "",
+                "album": "",
+                "source": {},
+                "audio_path": None,
+                "lyrics_path": None,
+            },
+        )
         if suffix in AUDIO_EXTENSIONS:
             item["audio_path"] = path
         elif suffix == ".json":
             item["lyrics_path"] = path
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    metadata = document_metadata(json.load(handle))
+                legacy = infer_legacy_metadata(path.stem)
+                item.update(
+                    {
+                        "title": metadata["title"] or legacy["title"] or path.stem,
+                        "artists": metadata["artists"] or legacy["artists"],
+                        "artist": metadata["artist"] or legacy["artist"],
+                        "album": metadata["album"],
+                        "source": metadata["source"],
+                    }
+                )
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                # A malformed/legacy document remains discoverable so the API
+                # can report it instead of making the whole library vanish.
+                pass
         elif suffix == ".lrc" and item["lyrics_path"] is None:
             item["lyrics_path"] = path
     return songs
@@ -248,9 +346,7 @@ def find_available_songs():
 
 def get_song_or_404(name):
     songs = find_available_songs()
-    if name not in songs:
-        return None
-    return songs[name]
+    return songs.get(existing_song_name(name))
 
 
 def read_lyrics(path):
@@ -260,7 +356,69 @@ def read_lyrics(path):
         return parse_lrc(path.read_text(encoding="utf-8-sig"))
     with path.open("r", encoding="utf-8") as f:
         lyrics = json.load(f)
-    return normalize_converted_lyrics(lyrics) if isinstance(lyrics, list) else lyrics
+    return normalize_converted_lyrics(lyrics_from_document(lyrics))
+
+
+def normalize_lyrics_document(items):
+    if not isinstance(items, list):
+        raise ValueError("歌词 JSON 必须是数组")
+    normalized = []
+    for position, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"第 {position} 行歌词必须是对象")
+        try:
+            timestamp = float(item.get("time", 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"第 {position} 行的 time 必须是数字") from exc
+        if not math.isfinite(timestamp) or timestamp < 0:
+            raise ValueError(f"第 {position} 行的 time 必须是非负有限数字")
+        original_html = safe_ruby_html(item.get("original_html", item.get("original", "")))
+        ruby_errors = validate_ruby_structure(original_html)
+        if ruby_errors:
+            raise ValueError(f"第 {position} 行的注音结构无效：{ruby_errors[0]}")
+        normalized.append(
+            {
+                "time": round(timestamp, 3),
+                "original_html": original_html,
+                "translation": strip_html(item.get("translation", "")),
+                "roman": strip_html(item.get("roman", item.get("roman_or_pronunciation", ""))),
+            }
+        )
+    normalized.sort(key=lambda line: line["time"])
+    return normalized
+
+
+def save_song_lyrics(song_name, items, metadata=None):
+    safe_name = existing_song_name(song_name)
+    if not safe_name:
+        raise ValueError("歌名不能为空")
+    existing = {}
+    existing_path = SONG_DIR / f"{safe_name}.json"
+    if existing_path.exists():
+        existing = normalize_document(read_json_path(existing_path, {}), title=safe_name)
+    legacy = infer_legacy_metadata(safe_name)
+    if isinstance(items, dict):
+        metadata = {**items, **(metadata or {})}
+        items = items.get("lyrics", [])
+    lyrics = normalize_lyrics_document(items)
+    metadata = metadata or {}
+    document = normalize_document(
+        existing,
+        title=metadata.get("title") or existing.get("title") or legacy["title"] or safe_name,
+        artists=(metadata.get("artists") if "artists" in metadata and metadata.get("artists") else None)
+        or metadata.get("artist")
+        or existing.get("artists")
+        or legacy["artists"],
+        album=metadata.get("album") or existing.get("album", ""),
+        source=metadata.get("source") or existing.get("source", {}),
+        lyrics=lyrics,
+    )
+    document["lyrics"] = lyrics
+    write_json_path(existing_path, document)
+    legacy_lrc = SONG_DIR / f"{safe_name}.lrc"
+    if legacy_lrc.exists():
+        archive_song_file(legacy_lrc)
+    return safe_name, lyrics, document
 
 
 def parse_lrc(text):
@@ -453,23 +611,6 @@ Your sole task is to wrap EVERY Kanji (or Chinese Hanzi) in `<ruby>` tags and ou
 3. Consistency: Keep the exact same number of items and order as the input target rows."""
 
 
-CLEAN_SOURCE_SYSTEM_PROMPT = """You are a precise data extraction assistant. Your task is to clean raw karaoke source text.
-
-### RULES
-1. Output strictly in JSON format without markdown wrappers.
-2. KEEP: Actual lyric lines, their translations, and pronunciation annotations such as ruby, furigana, or jyutping.
-3. REMOVE: Song titles, artist names, metadata credits, blank lines, purely romaji-only lines unless they are the actual sung lyric, and commentary.
-4. Do not invent or modify the lyrics."""
-
-
-def unwrap_items_result(result, label):
-    if isinstance(result, dict) and isinstance(result.get("items"), list):
-        return result["items"]
-    if isinstance(result, list):
-        return result
-    raise ValueError(f"{label} response must be a JSON array or an object with an items array")
-
-
 def ruby_rows_for_model(rows, include_time=False):
     model_rows = []
     for position, row in enumerate(rows, start=1):
@@ -517,7 +658,18 @@ def group_lrc_rows(rows):
 
 
 def workspace_path(name):
-    return SONG_DIR / f"{sanitize_filename(name)}.lyrics_source.json"
+    safe = existing_song_name(name)
+    if not safe:
+        raise ValueError("Song name is required")
+    direct = SONG_DIR / f"{safe}.lyrics_source.json"
+    if direct.exists():
+        return direct
+    matches = [
+        path
+        for path in SONG_DIR.glob("*.lyrics_source.json")
+        if normalized_name_key(path.name[: -len(".lyrics_source.json")]) == normalized_name_key(safe)
+    ]
+    return matches[0] if len(matches) == 1 else direct
 
 
 def read_json_path(path, default=None):
@@ -528,8 +680,7 @@ def read_json_path(path, default=None):
 
 
 def write_json_path(path, payload):
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
+    atomic_write_json(path, payload)
 
 
 def archive_song_file(source):
@@ -613,6 +764,45 @@ def audio_metadata(audio_path):
         return {"audio_size": 0, "audio_mtime": 0, "audio_mime": ""}
     stat = audio_path.stat()
     return {"audio_size": stat.st_size, "audio_mtime": int(stat.st_mtime), "audio_mime": audio_mime_type(audio_path)}
+
+
+def file_version(path):
+    if not path or not path.exists():
+        return ""
+    stat = path.stat()
+    return f"{stat.st_mtime_ns}:{stat.st_size}"
+
+
+def song_payload(name, song, info, include_lyrics=False):
+    audio_path = song["audio_path"]
+    lyrics_path = song["lyrics_path"]
+    audio_status = audio_compatibility(audio_path) if audio_path else {"playable": False, "error": ""}
+    audio_meta = audio_metadata(audio_path)
+    payload = {
+        "name": name,  # legacy storage-key alias; title/artist are authoritative
+        "title": song.get("title") or name,
+        "artists": song.get("artists", []),
+        "artist": song.get("artist", ""),
+        "album": song.get("album", ""),
+        "source": song.get("source", {}),
+        "schema_version": 1,
+        "has_audio": audio_path is not None,
+        "audio_playable": audio_status["playable"],
+        "audio_error": audio_status["error"],
+        "audio_size": audio_meta["audio_size"],
+        "audio_mtime": audio_meta["audio_mtime"],
+        "audio_mime": audio_meta["audio_mime"],
+        "audio_version": file_version(audio_path),
+        "has_lyrics": lyrics_path is not None,
+        "lyrics_type": lyrics_path.suffix.lower()[1:] if lyrics_path else None,
+        "document_version": file_version(lyrics_path),
+        "learned": bool(info.get("learned", False)),
+        "range": info.get("range", ""),
+        "saved_key": int(info.get("saved_key", 0)),
+    }
+    if include_lyrics:
+        payload["lyrics"] = read_lyrics(lyrics_path)
+    return payload
 
 
 def fetch_json(url, headers=None, timeout=SEARCH_HTTP_TIMEOUT_SECONDS):
@@ -996,74 +1186,16 @@ def safe_ruby_html(value):
 
     def stash(match):
         index = len(placeholders)
-        tag = match.group(0).lower()
-        tag = re.sub(r"\s+", "", tag)
+        closing = "/" if match.group(1) else ""
+        tag = f"<{closing}{match.group(2).lower()}>"
         placeholders.append(tag)
         return f"@@RUBY_TAG_{index}@@"
 
-    protected = re.sub(r"</?\s*(?:ruby|rt|rp)\s*>", stash, value, flags=re.I)
+    protected = re.sub(r"<\s*(/?)\s*(ruby|rt|rp)\b[^>]*>", stash, value, flags=re.I)
     escaped = html.escape(protected, quote=False)
     for index, tag in enumerate(placeholders):
         escaped = escaped.replace(f"@@RUBY_TAG_{index}@@", tag)
     return escaped
-
-
-def fallback_generated_row(row):
-    return {
-        "time": row.get("time", 0),
-        "original_html": html.escape(str(row.get("original", "") or ""), quote=False),
-        "translation": str(row.get("translation", "") or "").strip(),
-    }
-
-
-def legacy_lenient_normalize_workspace_generated_chunk(result, target_rows, report):
-    normalized_by_index = {}
-    warnings = []
-    if not isinstance(result, list):
-        warnings.append("模型返回值不是数组，本段使用原文兜底")
-        result = []
-
-    target_by_index = {int(row["index"]): row for row in target_rows}
-    for fallback_order, item in enumerate(result):
-        if not isinstance(item, dict):
-            continue
-        raw_index = item.get("index")
-        try:
-            row_index = int(raw_index)
-        except (TypeError, ValueError):
-            if fallback_order < len(target_rows):
-                row_index = int(target_rows[fallback_order]["index"])
-                warnings.append(f"模型第 {fallback_order + 1} 条缺少 index，已按顺序归入 {row_index}")
-            else:
-                continue
-        if row_index not in target_by_index:
-            warnings.append(f"模型返回了目标外 index {row_index}，已忽略")
-            continue
-        source = target_by_index[row_index]
-        if lyric_base_key(original_html) != lyric_base_key(source.get("original", "")):
-            raise ValueError(
-                f"index {row_index} 的原文被改写或读音被拼进正文：期望 {source.get('original', '')}，得到 {strip_html(original_html)}"
-            )
-        normalized_by_index[row_index] = {
-            "time": source.get("time", item.get("time", 0)),
-            "original_html": safe_ruby_html(item.get("original_html", source.get("original", ""))),
-            "translation": str(item.get("translation", source.get("translation", "")) or "").strip(),
-        }
-
-    merged = []
-    for row in target_rows:
-        row_index = int(row["index"])
-        item = normalized_by_index.get(row_index)
-        if not item:
-            warnings.append(f"index {row_index} 未返回，已用原文兜底")
-            item = fallback_generated_row(row)
-        merged.append(item)
-
-    for warning in warnings[:6]:
-        report(f"提示：{warning}")
-    if len(warnings) > 6:
-        report(f"提示：本段还有 {len(warnings) - 6} 条索引修正信息")
-    return merged
 
 
 def strip_html(value):
@@ -1289,56 +1421,6 @@ def validate_generated_workspace_lyrics(generated, rows):
     return errors, warnings
 
 
-def normalize_lyric_text(text):
-    text = re.sub(r"<rt>.*?</rt>", "", str(text), flags=re.I | re.S)
-    text = re.sub(r"<[^>]+>", "", text)
-    text = re.sub(r"\[[^\]]+\]", "", text)
-    text = re.sub(r"[A-Za-z0-9\s　,，.。!！?？:：;；'\"“”‘’()（）\-ー~～·・…、/\\|]", "", text)
-    return text.strip()
-
-
-def lyric_similarity(left, right):
-    left_text = normalize_lyric_text(left)
-    right_text = normalize_lyric_text(right)
-    if not left_text or not right_text:
-        return 0
-    if left_text in right_text or right_text in left_text:
-        return 1
-    return SequenceMatcher(None, left_text, right_text).ratio()
-
-
-def candidate_lines_for_chunk(cleaned_lines, chunk, total_rows):
-    matched_indexes = []
-    for row in chunk["target_rows"]:
-        row_text = row.get("text", "")
-        if not normalize_lyric_text(row_text):
-            continue
-        best_index = None
-        best_score = 0
-        for line_index, line in enumerate(cleaned_lines):
-            score = lyric_similarity(row_text, line)
-            if score > best_score:
-                best_index = line_index
-                best_score = score
-        if best_index is not None and best_score >= 0.34:
-            matched_indexes.append(best_index)
-
-    source_count = max(len(cleaned_lines), 1)
-    if matched_indexes:
-        source_start = max(0, min(matched_indexes) - 8)
-        source_end = min(source_count, max(matched_indexes) + 20)
-        strategy = f"相似匹配 {len(set(matched_indexes))} 个锚点"
-    else:
-        source_start = max(0, int(chunk["start"] / total_rows * source_count) - 8)
-        source_end = min(source_count, int(chunk["end"] / total_rows * source_count) + 20)
-        strategy = "未匹配到锚点，按进度取候选"
-
-    return (
-        [{"index": line_index, "text": cleaned_lines[line_index]} for line_index in range(source_start, source_end)],
-        strategy,
-    )
-
-
 def has_kana(text):
     return bool(re.search(r"[\u3040-\u30ff]", str(text)))
 
@@ -1422,143 +1504,6 @@ def normalize_converted_lyrics(items):
 
         normalized.append(next_item)
     return normalized
-
-
-def perform_lyrics_conversion(payload, report=lambda _message: None, job_id=None):
-    song_name = sanitize_filename(str(payload.get("song_name", "")).strip())
-    conversion_mode = str(payload.get("conversion_mode", "stable")).strip()
-    lrc_text = str(payload.get("lrc_text", "")).strip()
-    annotated_text = str(payload.get("annotated_text", "")).strip()
-    if not song_name:
-        raise ValueError("Song name is required")
-    if not lrc_text or not annotated_text:
-        raise ValueError("LRC and annotated text are required")
-
-    settings = load_settings()
-    if not settings.get("api_key"):
-        raise ValueError("API key is not configured")
-
-    rows = parse_lrc_timestamps(lrc_text)
-    if not rows:
-        raise ValueError("No timestamps found in LRC")
-    target_rows = group_lrc_rows(rows)
-    raise_if_stopped(job_id)
-    report(f"已读取 {len(rows)} 行带时间轴歌词，合并为 {len(target_rows)} 个时间点")
-
-    client = OpenAI(api_key=settings["api_key"], base_url=settings.get("base_url") or None)
-    model = settings.get("model") or "deepseek-v4-pro"
-    raise_if_stopped(job_id)
-
-    report("正在清理注音文本")
-    cleaned = chat_json(
-        client,
-        model,
-        CLEAN_SOURCE_SYSTEM_PROMPT,
-        {
-            "task": "Extract and clean lyric lines.",
-            "output_schema": {"lines": ["lyric line with ruby/furigana/jyutping if present"]},
-            "input_text": annotated_text,
-        },
-        json_object=True,
-    )
-    raise_if_stopped(job_id)
-    cleaned_lines = cleaned.get("lines", []) if isinstance(cleaned, dict) else []
-    if not isinstance(cleaned_lines, list) or not cleaned_lines:
-        cleaned_lines = [line.strip() for line in annotated_text.splitlines() if line.strip()]
-    cleaned_lines = [str(line).strip() for line in cleaned_lines if str(line).strip()]
-    report(f"已清理注音文本，保留 {len(cleaned_lines)} 行候选内容")
-
-    if conversion_mode != "chunked":
-        raise_if_stopped(job_id)
-        report("稳定模式：正在整首生成 JSON")
-        converted = chat_json(
-            client,
-            model,
-            RUBY_GENERATION_SYSTEM_PROMPT,
-            {
-                "task": "Generate ruby annotated timed lyric JSON.",
-                "metadata": {
-                    "mode": "stable_full_song_after_cleaning",
-                    "expected_item_count": len(target_rows),
-                },
-                "output_schema": {
-                    "items": [
-                        {
-                            "time": 12.34,
-                            "original_html": "lyrics with <ruby>漢字<rt>かんじ</rt></ruby>",
-                            "translation": "plain translation string or empty",
-                        }
-                    ]
-                },
-                "input_data": {
-                    "target_rows": ruby_rows_for_model(target_rows, include_time=True),
-                    "pronunciation_reference_lines": [
-                        {"index": i, "text": line}
-                        for i, line in enumerate(cleaned_lines)
-                    ],
-                },
-            },
-            json_object=True,
-        )
-        raise_if_stopped(job_id)
-        converted = unwrap_items_result(converted, "Stable generation")
-        if len(converted) != len(target_rows):
-            report(f"数量提示：目标时间点 {len(target_rows)} 个，模型返回 {len(converted)} 条；已继续保存，请人工检查断句")
-        converted = normalize_converted_lyrics(converted)
-        mode = "stable"
-        report("稳定模式整首生成完成")
-    else:
-        converted = []
-        chunks = chunk_rows(target_rows, size=12, context=2)
-        report(f"实验性分段模式：共 {len(chunks)} 段")
-        for index, chunk in enumerate(chunks, start=1):
-            raise_if_stopped(job_id)
-            candidate_lines, candidate_strategy = candidate_lines_for_chunk(cleaned_lines, chunk, len(target_rows))
-            report(f"正在生成第 {index}/{len(chunks)} 段（{candidate_strategy}）")
-            chunk_result = chat_json(
-                client,
-                model,
-                RUBY_GENERATION_SYSTEM_PROMPT,
-                {
-                    "task": "Generate ruby annotated timed lyric JSON.",
-                    "metadata": {
-                        "mode": "chunked",
-                        "chunk_number": index,
-                        "total_chunks": len(chunks),
-                        "expected_item_count": len(chunk["target_rows"]),
-                    },
-                    "output_schema": {
-                        "items": [
-                            {
-                                "time": 12.34,
-                                "original_html": "lyrics with <ruby>漢字<rt>かんじ</rt></ruby>",
-                                "translation": "plain translation string or empty",
-                            }
-                        ]
-                    },
-                    "input_data": {
-                        "context_rows": ruby_rows_for_model(chunk["context_rows"], include_time=True),
-                        "target_rows": ruby_rows_for_model(chunk["target_rows"], include_time=True),
-                        "pronunciation_reference_lines": candidate_lines,
-                    },
-                },
-                json_object=True,
-            )
-            raise_if_stopped(job_id)
-            chunk_result = unwrap_items_result(chunk_result, f"Chunk {index}")
-            if len(chunk_result) != len(chunk["target_rows"]):
-                report(f"数量提示：第 {index}/{len(chunks)} 段目标 {len(chunk['target_rows'])} 个，模型返回 {len(chunk_result)} 条；已继续")
-            converted.extend(chunk_result)
-            report(f"第 {index}/{len(chunks)} 段完成（{len(chunk_result)} 行，{candidate_strategy}）")
-        converted = normalize_converted_lyrics(converted)
-        mode = "chunked"
-
-    raise_if_stopped(job_id)
-    target = SONG_DIR / f"{song_name}.json"
-    with target.open("w", encoding="utf-8") as f:
-        json.dump(converted, f, indent=2, ensure_ascii=False)
-    report("JSON 已保存并加入歌库")
-    return {"ok": True, "song_name": song_name, "lyrics": converted, "mode": mode}
 
 
 def perform_ruby_from_rows(payload, report=lambda _message: None, job_id=None):
@@ -1791,14 +1736,24 @@ def perform_ruby_from_rows(payload, report=lambda _message: None, job_id=None):
     workspace["errors"] = []
     workspace["updated_at"] = now_iso()
     write_json_path(path, workspace)
-    report("已写入 generated_lyrics")
-    report(f"生成结果已写入工作源，共 {len(generated)} 行。发布前不会覆盖正式歌词")
+    # Ruby generation is the direct write path: replace only the lyric rows
+    # and preserve the document's title, artists, album, and source metadata.
+    document_path = SONG_DIR / f"{song_name}.json"
+    document = normalize_document(
+        read_json_path(document_path, {}),
+        title=workspace.get("song_name") or song_name,
+        artist=workspace.get("artist", ""),
+        source=workspace.get("source") or {},
+    )
+    document["lyrics"] = generated
+    write_json_path(document_path, document)
+    report(f"生成结果已直接写入正式 JSON，共 {len(generated)} 行")
     update_job(job_id, progress=100)
 
     return {
         "ok": True,
         "song_name": song_name,
-        "mode": "workspace",
+        "mode": "direct_json",
         "lyrics": generated,
         "errors": [],
     }
@@ -1821,11 +1776,6 @@ def index():
     return render_template("index.html")
 
 
-@app.route("/app")
-def mobile_app():
-    return render_template("mobile_app.html")
-
-
 @app.get("/api/app/health")
 def api_app_health():
     return jsonify(
@@ -1845,26 +1795,21 @@ def api_songs():
     payload = []
     for name in songs:
         info = db.get(name, {})
-        song = songs[name]
-        audio_status = audio_compatibility(song["audio_path"]) if song["audio_path"] else {"playable": False, "error": ""}
-        audio_meta = audio_metadata(song["audio_path"])
-        payload.append(
-            {
-                "name": name,
-                "has_audio": song["audio_path"] is not None,
-                "audio_playable": audio_status["playable"],
-                "audio_error": audio_status["error"],
-                "audio_size": audio_meta["audio_size"],
-                "audio_mtime": audio_meta["audio_mtime"],
-                "audio_mime": audio_meta["audio_mime"],
-                "has_lyrics": song["lyrics_path"] is not None,
-                "lyrics_type": song["lyrics_path"].suffix.lower()[1:] if song["lyrics_path"] else None,
-                "learned": bool(info.get("learned", False)),
-                "range": info.get("range", ""),
-                "saved_key": int(info.get("saved_key", 0)),
-            }
-        )
+        payload.append(song_payload(name, songs[name], info))
     return jsonify(payload)
+
+
+@app.get("/api/sync/manifest")
+def api_sync_manifest():
+    """Return only versioned song summaries for fast Android synchronization."""
+    db = load_db()
+    songs = find_available_songs()
+    return jsonify(
+        {
+            "schema_version": 1,
+            "songs": [song_payload(name, song, db.get(name, {})) for name, song in songs.items()],
+        }
+    )
 
 
 @app.get("/api/songs/<path:name>")
@@ -1874,26 +1819,9 @@ def api_song(name):
         return jsonify({"error": "Song not found"}), 404
 
     db = load_db()
+    name = song["name"]
     info = db.setdefault(name, {})
-    audio_status = audio_compatibility(song["audio_path"]) if song["audio_path"] else {"playable": False, "error": ""}
-    audio_meta = audio_metadata(song["audio_path"])
-    return jsonify(
-            {
-                "name": name,
-                "has_audio": song["audio_path"] is not None,
-                "audio_playable": audio_status["playable"],
-                "audio_error": audio_status["error"],
-                "audio_size": audio_meta["audio_size"],
-                "audio_mtime": audio_meta["audio_mtime"],
-                "audio_mime": audio_meta["audio_mime"],
-                "has_lyrics": song["lyrics_path"] is not None,
-                "lyrics_type": song["lyrics_path"].suffix.lower()[1:] if song["lyrics_path"] else None,
-                "lyrics": read_lyrics(song["lyrics_path"]),
-                "learned": bool(info.get("learned", False)),
-                "range": info.get("range", ""),
-            "saved_key": int(info.get("saved_key", 0)),
-        }
-    )
+    return jsonify(song_payload(name, song, info, include_lyrics=True))
 
 
 @app.get("/api/songs/<path:name>/audio")
@@ -1916,8 +1844,10 @@ def api_audio(name):
 
 @app.post("/api/songs/<path:name>/meta")
 def api_save_meta(name):
-    if not get_song_or_404(name):
+    song = get_song_or_404(name)
+    if not song:
         return jsonify({"error": "Song not found"}), 404
+    name = song["name"]
 
     payload = request.get_json(force=True)
     db = load_db()
@@ -1937,13 +1867,20 @@ def api_save_meta(name):
 @app.post("/api/songs/<path:name>/lyrics")
 def api_save_lyrics(name):
     payload = request.get_json(force=True)
-    if not isinstance(payload, list):
-        return jsonify({"error": "Lyrics must be a JSON array"}), 400
-
-    lyrics_path = SONG_DIR / f"{sanitize_filename(name)}.json"
-    with lyrics_path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    return jsonify({"ok": True})
+    try:
+        song_name, lyrics, document = save_song_lyrics(name, payload)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(
+        {
+            "ok": True,
+            "song_name": song_name,
+            "title": document["title"],
+            "artists": document["artists"],
+            "artist": artist_text(document),
+            "lines": len(lyrics),
+        }
+    )
 
 
 @app.post("/api/songs/<path:name>/delete")
@@ -1951,11 +1888,10 @@ def api_delete_song(name):
     song = get_song_or_404(name)
     if not song:
         return jsonify({"error": "Song not found"}), 404
+    name = song["name"]
 
-    for key in ("audio_path", "lyrics_path"):
-        source = song[key]
-        if not source:
-            continue
+    sources = set(song_files(name))
+    for source in sources:
         archive_song_file(source)
 
     db = load_db()
@@ -1964,11 +1900,102 @@ def api_delete_song(name):
     return jsonify({"ok": True})
 
 
+def song_files(name):
+    suffixes = AUDIO_EXTENSIONS | LYRICS_EXTENSIONS | {".zh.lrc", ".roma.lrc", ".lyrics_source.json"}
+    return [path for suffix in suffixes if (path := SONG_DIR / f"{name}{suffix}").exists()]
+
+
+@app.post("/api/songs/<path:name>/rename")
+def api_rename_song(name):
+    song = get_song_or_404(name)
+    if not song:
+        return jsonify({"error": "Song not found"}), 404
+    old_name = song["name"]
+    payload = request.get_json(force=True)
+    new_name = sanitize_filename(payload.get("new_name"))
+    if not new_name:
+        return jsonify({"error": "新歌名不能为空"}), 400
+    if new_name == old_name:
+        return jsonify({"ok": True, "song_name": old_name, "renamed": False})
+
+    other_names = [
+        item_name
+        for item_name in find_available_songs()
+        if item_name != old_name
+        and normalized_name_key(sanitize_filename(item_name)) == normalized_name_key(new_name)
+    ]
+    if other_names:
+        return jsonify({"error": f"歌库里已经有「{other_names[0]}」"}), 409
+
+    with jobs_lock:
+        jobs = load_jobs()
+        if any(
+            job.get("status") in {"queued", "running"}
+            and normalized_name_key(job.get("song_name")) == normalized_name_key(old_name)
+            for job in jobs.values()
+        ):
+            return jsonify({"error": "这首歌仍有生成任务在运行，请稍后再重命名"}), 409
+
+    pairs = [(source, SONG_DIR / f"{new_name}{source.name[len(old_name):]}") for source in song_files(old_name)]
+    for source, target in pairs:
+        if target.exists() and not os.path.samefile(source, target):
+            return jsonify({"error": f"目标文件已存在：{target.name}"}), 409
+
+    staged = []
+    try:
+        for source, target in pairs:
+            if source == target:
+                continue
+            temporary = SONG_DIR / f".rename-{uuid.uuid4().hex}.tmp"
+            os.replace(source, temporary)
+            staged.append((source, temporary, target))
+        for _source, temporary, target in staged:
+            os.replace(temporary, target)
+    except OSError as exc:
+        for source, temporary, target in reversed(staged):
+            try:
+                if temporary.exists():
+                    os.replace(temporary, source)
+                elif target.exists():
+                    os.replace(target, source)
+            except OSError:
+                logger.exception("Failed to roll back song rename")
+        return jsonify({"error": f"重命名文件失败：{exc}"}), 500
+
+    workspace = read_json_path(SONG_DIR / f"{new_name}.lyrics_source.json")
+    if isinstance(workspace, dict):
+        workspace["song_name"] = new_name
+        workspace["updated_at"] = now_iso()
+        write_json_path(SONG_DIR / f"{new_name}.lyrics_source.json", workspace)
+
+    db = load_db()
+    if old_name in db:
+        db[new_name] = db.pop(old_name)
+        save_db(db)
+
+    with jobs_lock:
+        jobs = load_jobs()
+        changed = False
+        for job in jobs.values():
+            if normalized_name_key(job.get("song_name")) != normalized_name_key(old_name):
+                continue
+            job["song_name"] = new_name
+            if isinstance(job.get("payload"), dict):
+                job["payload"]["song_name"] = new_name
+            job["updated_at"] = now_iso()
+            changed = True
+        if changed:
+            save_jobs(jobs)
+
+    for cached in GENERATED_DIR.glob(f"{sanitize_filename(old_name)}_*.wav"):
+        cached.unlink(missing_ok=True)
+    return jsonify({"ok": True, "renamed": True, "old_name": old_name, "song_name": new_name})
+
+
 @app.post("/api/upload/audio")
 def api_upload_audio():
     files = [file for file in request.files.getlist("audio") if file.filename]
-    target_song = sanitize_filename(request.form.get("target_song", "").strip())
-    saved = []
+    target_song = existing_song_name(request.form.get("target_song", "").strip())
     if not files:
         return jsonify({"error": "No audio files uploaded"}), 400
     if target_song and len(files) != 1:
@@ -1982,28 +2009,47 @@ def api_upload_audio():
         if song["audio_path"] and audio_compatibility(song["audio_path"])["playable"]:
             return jsonify({"error": "Target song already has audio"}), 409
 
+    prepared = []
+    planned_targets = set()
     for file in files:
         filename = sanitize_filename(file.filename)
         suffix = Path(filename).suffix.lower()
         if suffix not in AUDIO_EXTENSIONS:
             return jsonify({"error": f"Unsupported audio file: {filename}"}), 400
         target = SONG_DIR / f"{target_song}{suffix}" if target_song else SONG_DIR / filename
+        if target in planned_targets:
+            return jsonify({"error": f"一次上传中出现重复文件：{target.name}"}), 409
+        planned_targets.add(target)
+        if target.exists() and (not target_song or target != song.get("audio_path")):
+            return jsonify({"error": "Target audio file already exists"}), 409
+        prepared.append((file, target))
+
+    staged = []
+    try:
+        for file, target in prepared:
+            temporary = SONG_DIR / f".upload-{uuid.uuid4().hex}.tmp"
+            file.save(temporary)
+            staged.append((temporary, target))
         if target_song and song["audio_path"]:
             archive_song_file(song["audio_path"])
-            song["audio_path"] = None
-        if target_song and target.exists():
-            return jsonify({"error": "Target audio file already exists"}), 409
-        file.save(target)
-        saved.append(target.name)
+        for temporary, target in staged:
+            os.replace(temporary, target)
+    except OSError as exc:
+        for temporary, _target in staged:
+            temporary.unlink(missing_ok=True)
+        return jsonify({"error": f"保存音频失败：{exc}"}), 500
+    saved = [target.name for _file, target in prepared]
     return jsonify({"ok": True, "saved": saved})
 
 
 @app.post("/api/upload/lyrics")
 def api_upload_lyrics():
     files = [file for file in request.files.getlist("lyrics") if file.filename]
-    target_song = sanitize_filename(request.form.get("target_song", "").strip())
+    target_song = existing_song_name(request.form.get("target_song", "").strip())
     song_name = sanitize_filename(request.form.get("song_name", "").strip())
-    saved = []
+    title = str(request.form.get("title", "")).strip()
+    artist = str(request.form.get("artist", "")).strip()
+    album = str(request.form.get("album", "")).strip()
     if not files:
         return jsonify({"error": "No lyrics files uploaded"}), 400
     if target_song and len(files) != 1:
@@ -2019,31 +2065,78 @@ def api_upload_lyrics():
     elif song_name and len(files) != 1:
         return jsonify({"error": "Only one lyrics file can use a custom song name"}), 400
 
+    prepared = []
+    planned_names = set()
     for file in files:
         filename = sanitize_filename(file.filename)
         suffix = Path(filename).suffix.lower()
         if suffix not in LYRICS_EXTENSIONS:
             return jsonify({"error": f"Unsupported lyrics file: {filename}"}), 400
-        save_name = target_song or song_name
-        target = SONG_DIR / f"{save_name}{suffix}" if save_name else SONG_DIR / filename
+        save_name = existing_song_name(target_song or song_name or Path(filename).stem)
+        if not save_name:
+            return jsonify({"error": f"无法从文件名识别歌名：{filename}"}), 400
+        name_key = normalized_name_key(save_name)
+        if name_key in planned_names:
+            return jsonify({"error": f"一次上传中出现重复歌名：{save_name}"}), 409
+        planned_names.add(name_key)
         existing = find_available_songs().get(save_name) if save_name else None
         if existing and existing["lyrics_path"]:
             return jsonify({"error": "Target song already has lyrics"}), 409
-        if target.exists():
-            return jsonify({"error": "Target lyrics file already exists"}), 409
-        file.save(target)
-        saved.append(target.name)
-    return jsonify({"ok": True, "saved": saved})
+        try:
+            source_text = file.read().decode("utf-8-sig")
+            metadata = {"title": title, "artist": artist, "album": album}
+            if suffix == ".json":
+                raw_document = json.loads(source_text)
+                imported_metadata = document_metadata(raw_document)
+                for key in ("title", "artists", "artist", "album", "source"):
+                    if key == "artists" and metadata.get("artist"):
+                        continue
+                    if not metadata.get(key) and imported_metadata.get(key):
+                        metadata[key] = imported_metadata[key]
+                lyrics = lyrics_from_document(raw_document)
+            else:
+                lyrics = parse_lrc(source_text)
+                if not lyrics:
+                    raise ValueError("LRC 中没有带时间戳的歌词")
+            lyrics = normalize_lyrics_document(lyrics)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            return jsonify({"error": f"歌词文件 {filename} 无效：{exc}"}), 400
+        if not metadata.get("title"):
+            metadata["title"] = title or save_name
+        if target_song:
+            # Attaching a file to an existing song must not erase its
+            # metadata merely because the upload form omitted the fields.
+            metadata = {key: value for key, value in metadata.items() if value}
+        prepared.append((save_name, lyrics, metadata))
+
+    saved = []
+    for save_name, lyrics, metadata in prepared:
+        save_song_lyrics(save_name, lyrics, metadata)
+        saved.append(f"{save_name}.json")
+    result = {"ok": True, "saved": saved}
+    if len(prepared) == 1:
+        result["song_name"] = prepared[0][0]
+        result["lines"] = len(prepared[0][1])
+        result["title"] = prepared[0][2].get("title") or prepared[0][0]
+        result["artist"] = artist_text(prepared[0][2])
+    return jsonify(result)
 
 
 @app.post("/api/upload/lyrics-text")
 def api_upload_lyrics_text():
     payload = request.get_json(force=True)
-    target_song = sanitize_filename(str(payload.get("target_song", "")).strip())
+    target_song = existing_song_name(str(payload.get("target_song", "")).strip())
     song_name = sanitize_filename(str(payload.get("song_name", "")).strip())
     lyrics_text = str(payload.get("lyrics_text", "")).strip()
     lyrics_type = str(payload.get("lyrics_type", "lrc"))
     lyrics_type = lyrics_type.strip().lower()
+    metadata = {
+        "title": str(payload.get("title", "") or "").strip(),
+        "artists": payload.get("artists") if "artists" in payload else None,
+        "artist": str(payload.get("artist", "") or "").strip(),
+        "album": str(payload.get("album", "") or "").strip(),
+        "source": payload.get("source") if isinstance(payload.get("source"), dict) else {},
+    }
 
     if target_song:
         song = find_available_songs().get(target_song)
@@ -2067,26 +2160,43 @@ def api_upload_lyrics_text():
 
     if lyrics_type == "json":
         try:
-            parsed = json.loads(lyrics_text)
-        except json.JSONDecodeError as exc:
+            raw_document = json.loads(lyrics_text)
+            imported_metadata = document_metadata(raw_document)
+            parsed = normalize_lyrics_document(lyrics_from_document(raw_document))
+            for key in ("title", "artists", "artist", "album", "source"):
+                if not metadata.get(key) and imported_metadata.get(key):
+                    metadata[key] = imported_metadata[key]
+        except (json.JSONDecodeError, ValueError) as exc:
             return jsonify({"error": f"Invalid JSON lyrics: {exc}"}), 400
-        if not isinstance(parsed, list):
-            return jsonify({"error": "JSON lyrics must be an array"}), 400
-        target = SONG_DIR / f"{song_name}.json"
-        if target.exists():
-            return jsonify({"error": "Target lyrics file already exists"}), 409
-        with target.open("w", encoding="utf-8") as f:
-            json.dump(parsed, f, indent=2, ensure_ascii=False)
-        return jsonify({"ok": True, "song_name": song_name, "saved": target.name, "lines": len(parsed)})
+        saved_name, _lyrics, document = save_song_lyrics(song_name, parsed, metadata)
+        return jsonify(
+            {
+                "ok": True,
+                "song_name": saved_name,
+                "title": document["title"],
+                "artists": document["artists"],
+                "artist": artist_text(document),
+                "saved": f"{saved_name}.json",
+                "lines": len(parsed),
+            }
+        )
 
     rows = parse_lrc(lyrics_text)
     if not rows:
         return jsonify({"error": "LRC lyrics must include timestamped lines"}), 400
-    target = SONG_DIR / f"{song_name}.lrc"
-    if target.exists():
-        return jsonify({"error": "Target lyrics file already exists"}), 409
-    target.write_text(f"{lyrics_text}\n", encoding="utf-8")
-    return jsonify({"ok": True, "song_name": song_name, "saved": target.name, "lines": len(rows)})
+    lyrics = normalize_lyrics_document(rows)
+    saved_name, _lyrics, document = save_song_lyrics(song_name, lyrics, metadata)
+    return jsonify(
+        {
+            "ok": True,
+            "song_name": saved_name,
+            "title": document["title"],
+            "artists": document["artists"],
+            "artist": artist_text(document),
+            "saved": f"{saved_name}.json",
+            "lines": len(lyrics),
+        }
+    )
 
 
 @app.post("/api/lyrics-search")
@@ -2192,7 +2302,7 @@ def api_get_lyrics_workspace(name):
 @app.post("/api/lyrics-workspace/<path:name>")
 def api_save_lyrics_workspace(name):
     payload = request.get_json(force=True)
-    song_name = sanitize_filename(str(payload.get("song_name") or name).strip())
+    song_name = existing_song_name(payload.get("song_name") or name)
     if not song_name:
         return jsonify({"error": "Song name is required"}), 400
 
@@ -2223,7 +2333,17 @@ def api_use_lyrics_preview(name):
     preview = payload.get("preview")
     if not isinstance(result, dict) or not isinstance(preview, dict):
         return jsonify({"error": "Preview result is required"}), 400
-    song_name = sanitize_filename(str(payload.get("song_name") or name).strip())
+    requested_name = existing_song_name(payload.get("song_name") or name)
+    result_name = existing_song_name(result.get("title"))
+    songs = find_available_songs()
+    if requested_name in songs:
+        song_name = requested_name
+    elif result_name in songs:
+        song_name = result_name
+    else:
+        song_name = sanitize_filename(result.get("title") or requested_name)
+    if not song_name:
+        return jsonify({"error": "Song name is required"}), 400
     artist = str(payload.get("artist") or result.get("artist") or "").strip()
     workspace = workspace_from_preview(song_name, artist, result, preview)
     write_json_path(workspace_path(song_name), workspace)
@@ -2232,37 +2352,41 @@ def api_use_lyrics_preview(name):
 
 @app.post("/api/lyrics-workspace/<path:name>/from-song")
 def api_seed_workspace_from_song(name):
-    """把歌库中已有歌曲的歌词作为工作源，供「下载后 AI 生成 ruby JSON」使用。
-
-    原始逻辑会带网易云的三份歌词（原文 + 翻译 tlyric + 罗马音 romalrc），
-    下载时已按 {歌名}.lrc / {歌名}.zh.lrc / {歌名}.roma.lrc 落盘，
-    这里一并读入工作源，保证生成的歌词同时含翻译与罗马音。
-    """
-    song_name = sanitize_filename(str(name).strip())
+    """从歌库正式 JSON 或旧版 LRC 构造 AI 生成草稿。"""
+    song_name = existing_song_name(name)
     song = get_song_or_404(song_name)
+    if not song:
+        matched_name = next(
+            (candidate for candidate in find_available_songs() if candidate.casefold() == song_name.casefold()),
+            None,
+        )
+        if matched_name:
+            song_name = matched_name
+            song = get_song_or_404(song_name)
     if not song or not song.get("lyrics_path"):
         return jsonify({"error": "这首歌还没有歌词，无法生成 ruby JSON"}), 400
 
-    def companion_lrc(suffix):
-        companion = SONG_DIR / f"{song_name}{suffix}"
-        if companion.exists():
-            return companion.read_text(encoding="utf-8", errors="replace")
-        return ""
-
-    # 下载时新逻辑会额外落盘 {歌名}.zh.lrc（翻译）与 {歌名}.roma.lrc（罗马音），
-    # 与正式歌词是 .lrc 还是 .json 无关，一律优先采用。
-    translation_lrc = companion_lrc(".zh.lrc")
-    roman_lrc = companion_lrc(".roma.lrc")
+    payload = request.get_json(silent=True) or {}
 
     if song["lyrics_path"].suffix.lower() == ".lrc":
         original_lrc = song["lyrics_path"].read_text(encoding="utf-8", errors="replace")
+        translation_lrc = ""
+        roman_lrc = ""
+        for suffix, target in ((".zh.lrc", "translation"), (".roma.lrc", "roman")):
+            companion = SONG_DIR / f"{song_name}{suffix}"
+            if companion.exists():
+                value = companion.read_text(encoding="utf-8", errors="replace")
+                if target == "translation":
+                    translation_lrc = value
+                else:
+                    roman_lrc = value
     else:
         lyrics = read_lyrics(song["lyrics_path"])
         if not isinstance(lyrics, list):
             return jsonify({"error": "歌词格式无法解析为时间轴"}), 400
         original_lines = []
-        fallback_translation_lines = []
-        fallback_roman_lines = []
+        translation_lines = []
+        roman_lines = []
         for line in lyrics:
             if not isinstance(line, dict):
                 continue
@@ -2274,25 +2398,50 @@ def api_seed_workspace_from_song(name):
             text = re.sub(r"<[^>]+>", "", text).strip()
             if text:
                 original_lines.append(f"{stamp}{text}")
-            # 正式 .json 里若已带翻译/罗马音（新生成会带上），无配套文件时兜底采用
-            if not translation_lrc:
-                translation = str(line.get("translation") or "").strip()
-                if translation:
-                    fallback_translation_lines.append(f"{stamp}{translation}")
-            if not roman_lrc:
-                roman = str(line.get("roman") or line.get("roman_or_pronunciation") or "").strip()
-                if roman:
-                    fallback_roman_lines.append(f"{stamp}{roman}")
+            translation = str(line.get("translation") or "").strip()
+            if translation:
+                translation_lines.append(f"{stamp}{translation}")
+            roman = str(line.get("roman") or line.get("roman_or_pronunciation") or "").strip()
+            if roman:
+                roman_lines.append(f"{stamp}{roman}")
         original_lrc = "\n".join(original_lines)
+        translation_lrc = "\n".join(translation_lines)
+        roman_lrc = "\n".join(roman_lines)
+        # A legacy companion is only a fallback when the formal JSON does
+        # not already carry that field.
         if not translation_lrc:
-            translation_lrc = "\n".join(fallback_translation_lines)
+            companion = SONG_DIR / f"{song_name}.zh.lrc"
+            if companion.exists():
+                translation_lrc = companion.read_text(encoding="utf-8", errors="replace")
         if not roman_lrc:
-            roman_lrc = "\n".join(fallback_roman_lines)
+            companion = SONG_DIR / f"{song_name}.roma.lrc"
+            if companion.exists():
+                roman_lrc = companion.read_text(encoding="utf-8", errors="replace")
+
+    # A fresh NetEase download is authoritative for this workspace. The
+    # legacy companion files are only a fallback for old songs.
+    fresh_original = str(payload.get("original_lrc") or "").strip()
+    if fresh_original:
+        original_lrc = str(payload["original_lrc"])
+        # Once a fresh original was obtained, empty translation/roman fields
+        # are authoritative too (the provider may genuinely have no entry).
+        translation_lrc = str(payload.get("translation_lrc") or "")
+        roman_lrc = str(payload.get("roman_lrc") or "")
+    else:
+        # If the fresh request failed, retain legacy/formal data instead of
+        # letting an empty frontend payload erase it.
+        if str(payload.get("translation_lrc") or "").strip():
+            translation_lrc = str(payload["translation_lrc"])
+        if str(payload.get("roman_lrc") or "").strip():
+            roman_lrc = str(payload["roman_lrc"])
 
     workspace = {
         "song_name": song_name,
-        "artist": "",
-        "source": {"provider": "netease", "song_id": "", "album": "", "duration": None},
+        "artist": song.get("artist", ""),
+        "source": {
+            **(song.get("source") or {}),
+            "album": song.get("album", ""),
+        },
         "original_lrc": original_lrc,
         "translation_lrc": translation_lrc,
         "roman_lrc": roman_lrc,
@@ -2320,30 +2469,6 @@ def api_realign_lyrics_workspace(name):
     workspace["updated_at"] = now_iso()
     write_json_path(workspace_path(name), workspace)
     return jsonify(workspace)
-
-
-@app.post("/api/lyrics-workspace/<path:name>/publish")
-def api_publish_lyrics_workspace(name):
-    workspace = read_json_path(workspace_path(name))
-    if not workspace:
-        return jsonify({"error": "Lyrics workspace not found"}), 404
-    lyrics = workspace.get("generated_lyrics", [])
-    if not isinstance(lyrics, list) or not lyrics:
-        return jsonify({"error": "No generated lyrics to publish"}), 400
-    lyrics = normalize_converted_lyrics(lyrics)
-    validation_errors, validation_warnings = validate_generated_workspace_lyrics(lyrics, workspace.get("line_rows", []))
-    if validation_errors:
-        workspace["status"] = "validation_failed"
-        workspace["errors"] = [{"error": message} for message in validation_errors[:20]]
-        workspace["updated_at"] = now_iso()
-        write_json_path(workspace_path(name), workspace)
-        return jsonify({"error": f"Generated lyrics failed validation: {validation_errors[0]}"}), 400
-    target = SONG_DIR / f"{sanitize_filename(name)}.json"
-    write_json_path(target, lyrics)
-    workspace["status"] = "published"
-    workspace["updated_at"] = now_iso()
-    write_json_path(workspace_path(name), workspace)
-    return jsonify({"ok": True, "song_name": name, "published_count": len(lyrics), "lyrics_count": len(lyrics)})
 
 
 @app.get("/api/settings")
@@ -2393,19 +2518,18 @@ def api_test_settings():
         return jsonify({"error": str(exc)}), 502
 
 
-def run_convert_job_v2(job_id):
+def run_generation_job(job_id):
     started_at = datetime.now().astimezone()
     update_job(job_id, status="running", message="任务已开始", started_at=started_at.isoformat(timespec="seconds"))
     try:
         with jobs_lock:
             job = load_jobs().get(job_id, {})
             payload = job.get("payload", {})
-            job_type = job.get("type", "convert_lyrics")
+            job_type = job.get("type")
 
-        if job_type == "generate_ruby_from_rows":
-            result = perform_ruby_from_rows(payload, report=lambda message: append_job_step(job_id, message), job_id=job_id)
-        else:
-            result = perform_lyrics_conversion(payload, report=lambda message: append_job_step(job_id, message), job_id=job_id)
+        if job_type != "generate_ruby_from_rows":
+            raise ValueError("该历史任务使用的旧生成流程已停用，请从歌词制作页重新生成")
+        result = perform_ruby_from_rows(payload, report=lambda message: append_job_step(job_id, message), job_id=job_id)
 
         duration_seconds = round((datetime.now().astimezone() - started_at).total_seconds(), 1)
         update_job(
@@ -2446,50 +2570,6 @@ def run_convert_job_v2(job_id):
         )
 
 
-def run_convert_job(job_id):
-    started_at = datetime.now().astimezone()
-    update_job(job_id, status="running", message="任务已开始", started_at=started_at.isoformat(timespec="seconds"))
-    try:
-        with jobs_lock:
-            job = load_jobs().get(job_id, {})
-            payload = job.get("payload", {})
-
-        result = perform_lyrics_conversion(payload, report=lambda message: append_job_step(job_id, message), job_id=job_id)
-        duration_seconds = round((datetime.now().astimezone() - started_at).total_seconds(), 1)
-        update_job(
-            job_id,
-            status="done",
-            progress=100,
-            message=f"生成完成，用时 {duration_seconds} 秒",
-            result={"song_name": result["song_name"], "mode": result["mode"]},
-            duration_seconds=duration_seconds,
-            finished_at=now_iso(),
-        )
-    except RuntimeError as exc:
-        duration_seconds = round((datetime.now().astimezone() - started_at).total_seconds(), 1)
-        if str(exc) != "TASK_STOPPED":
-            append_job_step(job_id, f"任务停止：{exc}")
-        update_job(
-            job_id,
-            status="stopped",
-            message="任务已停止",
-            duration_seconds=duration_seconds,
-            finished_at=now_iso(),
-            stop_requested=False,
-        )
-    except Exception as exc:
-        duration_seconds = round((datetime.now().astimezone() - started_at).total_seconds(), 1)
-        append_job_step(job_id, f"生成失败：{exc}")
-        update_job(
-            job_id,
-            status="failed",
-            message=f"生成失败：{exc}",
-            error=str(exc),
-            duration_seconds=duration_seconds,
-            finished_at=now_iso(),
-        )
-
-
 @app.get("/api/convert-jobs")
 def api_convert_jobs():
     with jobs_lock:
@@ -2503,14 +2583,13 @@ def api_convert_jobs():
 def api_create_convert_job():
     payload = request.get_json(force=True)
     song_name = sanitize_filename(str(payload.get("song_name", "")).strip())
-    job_type = str(payload.get("type") or payload.get("job_type") or "convert_lyrics").strip()
+    job_type = str(payload.get("type") or payload.get("job_type") or "generate_ruby_from_rows").strip()
     if not song_name:
         return jsonify({"error": "Song name is required"}), 400
-    if job_type == "generate_ruby_from_rows":
-        if not workspace_path(song_name).exists():
-            return jsonify({"error": "Lyrics workspace not found"}), 400
-    elif not str(payload.get("lrc_text", "")).strip() or not str(payload.get("annotated_text", "")).strip():
-        return jsonify({"error": "LRC and annotated text are required"}), 400
+    if job_type != "generate_ruby_from_rows":
+        return jsonify({"error": "旧歌词生成流程已停用"}), 400
+    if not workspace_path(song_name).exists():
+        return jsonify({"error": "Lyrics workspace not found"}), 400
     if not load_settings().get("api_key"):
         return jsonify({"error": "API key is not configured"}), 400
 
@@ -2519,7 +2598,7 @@ def api_create_convert_job():
         "id": job_id,
         "type": job_type,
         "song_name": song_name,
-        "mode": "workspace" if job_type == "generate_ruby_from_rows" else str(payload.get("conversion_mode", "stable")).strip() or "stable",
+        "mode": "workspace",
         "progress": 0,
         "status": "queued",
         "message": "任务已加入后台队列",
@@ -2528,7 +2607,7 @@ def api_create_convert_job():
         "updated_at": now_iso(),
         "payload": payload,
     }
-    queued_message = "工作页任务已加入后台队列" if job_type == "generate_ruby_from_rows" else "任务已加入后台队列"
+    queued_message = "歌词生成任务已加入后台队列"
     job["message"] = queued_message
     job["steps"] = [{"time": now_iso(), "message": queued_message}]
     with jobs_lock:
@@ -2536,7 +2615,7 @@ def api_create_convert_job():
         jobs[job_id] = job
         save_jobs(jobs)
 
-    thread = threading.Thread(target=run_convert_job_v2, args=(job_id,), daemon=True)
+    thread = threading.Thread(target=run_generation_job, args=(job_id,), daemon=True)
     thread.start()
     return jsonify(public_job(job)), 202
 
@@ -2580,6 +2659,8 @@ def api_retry_convert_job(job_id):
             return jsonify({"error": "Only failed or stopped jobs can be retried"}), 400
         if not job.get("payload"):
             return jsonify({"error": "Job payload is missing, cannot retry"}), 400
+        if job.get("type") != "generate_ruby_from_rows":
+            return jsonify({"error": "该历史任务使用的旧生成流程已停用，请重新生成"}), 400
         job["status"] = "queued"
         job["progress"] = 0
         job.pop("error", None)
@@ -2594,7 +2675,7 @@ def api_retry_convert_job(job_id):
         save_jobs(jobs)
         retried = dict(job)
 
-    thread = threading.Thread(target=run_convert_job_v2, args=(job_id,), daemon=True)
+    thread = threading.Thread(target=run_generation_job, args=(job_id,), daemon=True)
     thread.start()
     return jsonify(public_job(retried)), 202
 
@@ -2613,228 +2694,9 @@ def api_delete_convert_job(job_id):
     return jsonify({"ok": True})
 
 
-@app.post("/api/convert-lyrics-old")
-def api_convert_lyrics():
-    payload = request.get_json(force=True)
-    song_name = sanitize_filename(str(payload.get("song_name", "")).strip())
-    conversion_mode = str(payload.get("conversion_mode", "stable")).strip()
-    lrc_text = str(payload.get("lrc_text", "")).strip()
-    annotated_text = str(payload.get("annotated_text", "")).strip()
-    if not song_name:
-        return jsonify({"error": "Song name is required"}), 400
-    if not lrc_text or not annotated_text:
-        return jsonify({"error": "LRC and annotated text are required"}), 400
-
-    settings = load_settings()
-    if not settings.get("api_key"):
-        return jsonify({"error": "API key is not configured"}), 400
-
-    rows = parse_lrc_timestamps(lrc_text)
-    if not rows:
-        return jsonify({"error": "No timestamps found in LRC"}), 400
-
-    try:
-        client = OpenAI(api_key=settings["api_key"], base_url=settings.get("base_url") or None)
-        converted = chat_json(
-            client,
-            settings.get("model") or "deepseek-v4-pro",
-            RUBY_GENERATION_SYSTEM_PROMPT,
-            {
-                "task": "Generate ruby annotated timed lyric JSON.",
-                "metadata": {
-                    "mode": "legacy_direct",
-                    "expected_item_count": len(rows),
-                },
-                "output_schema": {
-                    "items": [
-                        {
-                            "time": 12.34,
-                            "original_html": "lyrics with <ruby>漢字<rt>かんじ</rt></ruby>",
-                            "translation": "plain translation string or empty",
-                        }
-                    ]
-                },
-                "input_data": {
-                    "target_rows": ruby_rows_for_model(rows, include_time=True),
-                    "pronunciation_reference_text": annotated_text,
-                },
-            },
-            json_object=True,
-        )
-        converted = unwrap_items_result(converted, "Model")
-    except Exception as exc:
-        return jsonify({"error": f"Model conversion failed: {exc}"}), 502
-
-    target = SONG_DIR / f"{song_name}.json"
-    with target.open("w", encoding="utf-8") as f:
-        json.dump(converted, f, indent=2, ensure_ascii=False)
-    return jsonify({"ok": True, "song_name": song_name, "lyrics": converted})
-
-
-@app.post("/api/convert-lyrics")
-def api_convert_lyrics_chunked():
-    payload = request.get_json(force=True)
-    song_name = sanitize_filename(str(payload.get("song_name", "")).strip())
-    conversion_mode = str(payload.get("conversion_mode", "stable")).strip()
-    lrc_text = str(payload.get("lrc_text", "")).strip()
-    annotated_text = str(payload.get("annotated_text", "")).strip()
-    if not song_name:
-        return jsonify({"error": "Song name is required"}), 400
-    if not lrc_text or not annotated_text:
-        return jsonify({"error": "LRC and annotated text are required"}), 400
-
-    settings = load_settings()
-    if not settings.get("api_key"):
-        return jsonify({"error": "API key is not configured"}), 400
-
-    rows = parse_lrc_timestamps(lrc_text)
-    if not rows:
-        return jsonify({"error": "No timestamps found in LRC"}), 400
-    target_rows = group_lrc_rows(rows)
-
-    client = OpenAI(api_key=settings["api_key"], base_url=settings.get("base_url") or None)
-    model = settings.get("model") or "deepseek-v4-pro"
-    steps = [f"已读取 {len(rows)} 行带时间轴歌词，合并为 {len(target_rows)} 个时间点"]
-
-    try:
-        cleaned = chat_json(
-            client,
-            model,
-            CLEAN_SOURCE_SYSTEM_PROMPT,
-            {
-                "task": "Extract and clean lyric lines.",
-                "output_schema": {"lines": ["lyric line with ruby/furigana/jyutping if present"]},
-                "input_text": annotated_text,
-            },
-            json_object=True,
-        )
-    except json.JSONDecodeError as exc:
-        return jsonify({"error": f"Clean step returned invalid JSON: {exc}"}), 502
-    except Exception as exc:
-        return jsonify({"error": f"Clean step failed: {exc}"}), 502
-
-    cleaned_lines = cleaned.get("lines", []) if isinstance(cleaned, dict) else []
-    if not isinstance(cleaned_lines, list) or not cleaned_lines:
-        cleaned_lines = [line.strip() for line in annotated_text.splitlines() if line.strip()]
-    cleaned_lines = [str(line).strip() for line in cleaned_lines if str(line).strip()]
-    steps.append(f"已清理注音文本，保留 {len(cleaned_lines)} 行候选内容")
-
-    converted = []
-    if conversion_mode != "chunked":
-        try:
-            converted = chat_json(
-                client,
-                model,
-                RUBY_GENERATION_SYSTEM_PROMPT,
-                {
-                    "task": "Generate ruby annotated timed lyric JSON.",
-                    "metadata": {
-                        "mode": "stable_full_song_after_cleaning",
-                        "expected_item_count": len(target_rows),
-                    },
-                    "output_schema": {
-                        "items": [
-                            {
-                                "time": 12.34,
-                                "original_html": "lyrics with <ruby>漢字<rt>かんじ</rt></ruby>",
-                                "translation": "plain translation string or empty",
-                            }
-                        ]
-                    },
-                    "input_data": {
-                        "target_rows": ruby_rows_for_model(target_rows, include_time=True),
-                        "pronunciation_reference_lines": [
-                            {"index": line_index, "text": line}
-                            for line_index, line in enumerate(cleaned_lines)
-                        ],
-                    },
-                },
-                json_object=True,
-            )
-        except json.JSONDecodeError as exc:
-            return jsonify({"error": f"Stable generation returned invalid JSON: {exc}"}), 502
-        except Exception as exc:
-            return jsonify({"error": f"Stable generation failed: {exc}"}), 502
-
-        try:
-            converted = unwrap_items_result(converted, "Stable generation")
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 502
-        if len(converted) != len(target_rows):
-            steps.append(f"数量提示：目标时间点 {len(target_rows)} 个，模型返回 {len(converted)} 条；已继续保存，请人工检查断句")
-        converted = normalize_converted_lyrics(converted)
-
-        target = SONG_DIR / f"{song_name}.json"
-        with target.open("w", encoding="utf-8") as f:
-            json.dump(converted, f, indent=2, ensure_ascii=False)
-        steps.append("稳定模式整首生成完成")
-        steps.append("JSON 已保存并加入歌库")
-        return jsonify({"ok": True, "song_name": song_name, "lyrics": converted, "steps": steps, "mode": "stable"})
-
-    chunks = chunk_rows(target_rows, size=12, context=2)
-    for index, chunk in enumerate(chunks, start=1):
-        candidate_lines, candidate_strategy = candidate_lines_for_chunk(cleaned_lines, chunk, len(target_rows))
-        try:
-            chunk_result = chat_json(
-                client,
-                model,
-                RUBY_GENERATION_SYSTEM_PROMPT,
-                {
-                    "task": "Generate ruby annotated timed lyric JSON.",
-                    "metadata": {
-                        "mode": "chunked",
-                        "chunk_number": index,
-                        "total_chunks": len(chunks),
-                        "expected_item_count": len(chunk["target_rows"]),
-                    },
-                    "output_schema": {
-                        "items": [
-                            {
-                                "time": 12.34,
-                                "original_html": "lyrics with <ruby>漢字<rt>かんじ</rt></ruby>",
-                                "translation": "plain translation string or empty",
-                            }
-                        ]
-                    },
-                    "input_data": {
-                        "context_rows": ruby_rows_for_model(chunk["context_rows"], include_time=True),
-                        "target_rows": ruby_rows_for_model(chunk["target_rows"], include_time=True),
-                        "pronunciation_reference_lines": candidate_lines,
-                    },
-                },
-                json_object=True,
-            )
-        except json.JSONDecodeError as exc:
-            return jsonify({"error": f"Chunk {index} returned invalid JSON: {exc}"}), 502
-        except Exception as exc:
-            return jsonify({"error": f"Chunk {index} failed: {exc}"}), 502
-
-        try:
-            chunk_result = unwrap_items_result(chunk_result, f"Chunk {index}")
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 502
-        if len(chunk_result) != len(chunk["target_rows"]):
-            steps.append(f"数量提示：第 {index}/{len(chunks)} 段目标 {len(chunk['target_rows'])} 个，模型返回 {len(chunk_result)} 条；已继续")
-        converted.extend(chunk_result)
-        steps.append(f"第 {index}/{len(chunks)} 段完成（{len(chunk_result)} 行，{candidate_strategy}）")
-
-    converted = normalize_converted_lyrics(converted)
-
-    target = SONG_DIR / f"{song_name}.json"
-    with target.open("w", encoding="utf-8") as f:
-        json.dump(converted, f, indent=2, ensure_ascii=False)
-    steps.append("JSON 已保存并加入歌库")
-    return jsonify({"ok": True, "song_name": song_name, "lyrics": converted, "steps": steps, "mode": "chunked"})
-
-
 @app.get("/manifest.webmanifest")
 def manifest():
     return send_file(BASE_DIR / "web_static" / "manifest.webmanifest", mimetype="application/manifest+json")
-
-
-@app.get("/app.webmanifest")
-def app_manifest():
-    return send_file(BASE_DIR / "web_static" / "app.webmanifest", mimetype="application/manifest+json")
 
 
 if __name__ == "__main__":

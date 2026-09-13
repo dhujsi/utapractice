@@ -1,6 +1,16 @@
 .venv
+.git
+.build
+.mindfs
+.playwright-cli
+output
+dist
+android
 __pycache__
+*.py[cod]
 data
+songs
+songs_archived
 generated
 settings.local.json
 lyrics_jobs.json

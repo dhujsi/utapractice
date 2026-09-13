@@ -1,60 +1,29 @@
-# 当前已接入的 AI 提示词
+# AI 注音生成合约
 
-这个文件记录当前 `web_app.py` 里实际使用的提示词结构。规则已经从 user payload 的 `rules` 数组移到 system prompt，user payload 只传数据和 schema。
+本文件描述当前唯一的 AI 歌词流程。提示词的可执行真源位于 `web_app.py` 的
+`RUBY_GENERATION_SYSTEM_PROMPT`；APK 在本地后端中实现相同的数据约束。
 
-## 1. Ruby 生成 System Prompt
+## 输入
 
-用于：
-
-- 工作页逐段生成 ruby JSON
-- 工作页失败后整段重试
-- 旧同步转换接口
-- 旧稳定/分段转换流程
-
-```text
-You are a highly precise karaoke lyric alignment and ruby annotation engine.
-Your sole task is to inject `<ruby>` tags based on provided pronunciations and output strictly in JSON format.
-
-### CORE CONSTRAINTS
-1. JSON ONLY: Output a single valid JSON object/array matching the requested schema. Do not include markdown code blocks, explanations, or preamble.
-2. STRICT TEXT PRESERVATION: After removing `<ruby>`, `<rt>`, and `<rp>` tags from `original_html`, the remaining visible text MUST perfectly match the input `original` text character by character.
-   - NEVER normalize, modernize, translate, or rewrite text. For example, keep 未來 as 未來, do not change it to 未来.
-   - Preserve all spaces and punctuation exactly.
-
-### RUBY ANNOTATION RULES
-1. Target Characters: Add ruby ONLY to characters that require pronunciation hints, such as Kanji in Japanese or specific Hanzi in Chinese. DO NOT add ruby to Kana, standard English, or romaji.
-2. Structure: Use the format `<ruby>Base<rt>Reading</rt></ruby>`. Never append readings inline. For example, output `<ruby>君<rt>きみ</rt></ruby>が`, NEVER `君きみが`.
-3. Okurigana for Japanese: The `<rt>` tag must only contain the reading for the Kanji. The okurigana remains outside.
-   - Correct: `<ruby>渇<rt>かわ</rt></ruby>いた`
-   - Incorrect: `<ruby>渇<rt>か</rt></ruby>いた` or `<ruby>渇い<rt>かわい</rt></ruby>た`
-4. Missing or Uncertain Readings: If a reading is uncertain or missing in the source, leave the character unannotated.
-
-### DATA HANDLING
-1. Translations: Put translations ONLY in the `translation` field. NEVER put translations, meanings, or `<br>` tags inside `original_html`.
-2. Metadata: Do not invent lyrics, timestamps, or copy global metadata such as artist/title/credits into item rows.
-3. Consistency: Keep the exact same number of items and order as the input target rows.
-```
-
-## 2. 工作页生成 Payload
-
-位置：`perform_ruby_from_rows`
+“歌词制作”页先把原文、翻译和读音来源对齐为草稿行。生成任务只接受
+`generate_ruby_from_rows` 类型，并按段提交以下数据：
 
 ```json
 {
   "task": "Generate ruby annotated JSON for aligned lyric rows.",
   "metadata": {
-    "song_name": "<workspace song name>",
-    "artist": "<artist>",
+    "song_name": "歌曲名",
+    "artist": "歌手",
     "chunk_number": 1,
-    "total_chunks": 11,
-    "expected_item_count": 4
+    "total_chunks": 8,
+    "expected_item_count": 8
   },
   "output_schema": {
     "items": [
       {
         "row_number": 1,
-        "original_html": "lyrics with <ruby>漢字<rt>かんじ</rt></ruby>",
-        "translation": "plain translation string or empty"
+        "original_html": "<ruby>歌<rt>うた</rt></ruby>",
+        "translation": "翻译"
       }
     ]
   },
@@ -63,9 +32,9 @@ Your sole task is to inject `<ruby>` tags based on provided pronunciations and o
     "target_rows": [
       {
         "row_number": 1,
-        "original": "<original lyric>",
-        "translation": "<translation>",
-        "roman_or_pronunciation": "<roman/pronunciation hint>"
+        "original": "歌",
+        "translation": "翻译",
+        "roman_or_pronunciation": "uta"
       }
     ],
     "context_rows_after": []
@@ -73,107 +42,19 @@ Your sole task is to inject `<ruby>` tags based on provided pronunciations and o
 }
 ```
 
-## 3. 工作页回修 Payload
+## 服务端校验
 
-System prompt 同第 1 节。
+- 返回值必须是 JSON 数组，或包含 `items` 数组的 JSON 对象。
+- 行数、顺序和 `row_number` 必须与目标行一致。
+- 去掉 ruby 标签后的正文必须逐字等于输入原文。
+- 只允许 `<ruby>`、`<rt>`、`<rp>`；属性和其他 HTML 会被移除或转义。
+- 翻译和罗马音必须是纯文本，时间戳沿用对齐后的原始时间轴。
+- 日文汉字或中文汉字的注音覆盖不足会触发整段重试；达到重试上限则任务失败，不会写入半成品。
 
-```json
-{
-  "task": "Repair invalid JSON from previous failed generation.",
-  "validation_error": "<last_error_message_from_server>",
-  "instruction": "The previous output failed validation. Regenerate the ENTIRE chunk for target_rows. Ensure strict adherence to text preservation and ruby tag rules. Discard previous formatting errors.",
-  "previous_output": "<previous model output or null>",
-  "metadata": {
-    "song_name": "<workspace song name>",
-    "artist": "<artist>",
-    "chunk_number": 1,
-    "total_chunks": 11,
-    "expected_item_count": 4
-  },
-  "output_schema": {
-    "items": [
-      {
-        "row_number": 1,
-        "original_html": "lyrics with <ruby>漢字<rt>かんじ</rt></ruby>",
-        "translation": "plain translation string or empty"
-      }
-    ]
-  },
-  "input_data": {
-    "target_rows": [
-      {
-        "row_number": 1,
-        "original": "<original lyric>",
-        "translation": "<translation>",
-        "roman_or_pronunciation": "<roman/pronunciation hint>"
-      }
-    ]
-  }
-}
-```
+## 输出与失败语义
 
-## 4. 清理源文本 System Prompt
+全部分段通过校验后，服务端一次性替换 `songs/<存储键>.json` SongDocument 的 `lyrics` 字段，并保留歌曲的 `title`、`artists`、`album`、`source`。草稿只承担搜索结果校对、
+对齐和任务过程记录，不存在“发布正式歌词”步骤，也没有旧的整首/分段转换接口。
 
-用于旧歌词转换流程的“清理注音文本”步骤。
-
-```text
-You are a precise data extraction assistant. Your task is to clean raw karaoke source text.
-
-### RULES
-1. Output strictly in JSON format without markdown wrappers.
-2. KEEP: Actual lyric lines, their translations, and pronunciation annotations such as ruby, furigana, or jyutping.
-3. REMOVE: Song titles, artist names, metadata credits, blank lines, purely romaji-only lines unless they are the actual sung lyric, and commentary.
-4. Do not invent or modify the lyrics.
-```
-
-## 5. 清理源文本 Payload
-
-```json
-{
-  "task": "Extract and clean lyric lines.",
-  "output_schema": {
-    "lines": [
-      "lyric line with ruby/furigana/jyutping if present"
-    ]
-  },
-  "input_text": "<annotated_text_string>"
-}
-```
-
-## 6. 旧转换流程 Payload
-
-旧转换现在也用第 1 节的 ruby system prompt，并统一要求返回 `{"items":[...]}`，方便启用 JSON object 模式。
-
-```json
-{
-  "task": "Generate ruby annotated timed lyric JSON.",
-  "metadata": {
-    "mode": "stable_full_song_after_cleaning | chunked | legacy_direct",
-    "chunk_number": 1,
-    "total_chunks": 3,
-    "expected_item_count": 12
-  },
-  "output_schema": {
-    "items": [
-      {
-        "time": 12.34,
-        "original_html": "lyrics with <ruby>漢字<rt>かんじ</rt></ruby>",
-        "translation": "plain translation string or empty"
-      }
-    ]
-  },
-  "input_data": {
-    "context_rows": [],
-    "target_rows": [
-      {
-        "row_number": 1,
-        "time": 12.34,
-        "original": "<lrc line text>",
-        "translation": "",
-        "roman_or_pronunciation": ""
-      }
-    ],
-    "pronunciation_reference_lines": []
-  }
-}
-```
+失败任务保留日志和原始 payload，可在歌词制作页重试；旧流程的历史任务只可查看或删除，
+不能重新排队。

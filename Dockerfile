@@ -13,4 +13,4 @@ COPY . .
 
 EXPOSE 8501
 
-CMD ["python", "web_app_ext.py"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8501", "--workers", "1", "--threads", "8", "--timeout", "180", "web_app:app"]

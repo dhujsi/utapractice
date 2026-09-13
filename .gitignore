@@ -10,6 +10,8 @@ data/
 static/
 generated/
 dist/*.apk
+.build/
+.mindfs/
 android/.gradle/
 android/**/build/
 

@@ -6,15 +6,18 @@ services:
       - "8502:8501"
     environment:
       NETEASE_BRIDGE_BASE: http://netease-bridge:8503
+      DATA_DIR: /data
     volumes:
-      - ./data/songs:/app/songs
-      - ./data/songs_archived:/app/songs_archived
-      - ./data/song_db.json:/app/song_db.json
-      - ./data/lyrics_jobs.json:/app/lyrics_jobs.json
-      - ./data/settings.local.json:/app/settings.local.json
+      - ./data:/data
     depends_on:
       - ncm-api
       - netease-bridge
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/api/app/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: always
     labels:
       watchcow.enable: "true"

@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 import time
+import unicodedata
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,9 +13,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+from song_document import normalize_document
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = Path(os.environ.get("NETEASE_DATA_DIR", str(BASE_DIR))).expanduser().resolve()
 NCM_API_BASE = os.environ.get("NCM_API_BASE", "http://ncm-api:3000").rstrip("/")
-SONG_DIR = Path(os.environ.get("SONG_DIR", "/data/songs"))
-STATE_PATH = Path(os.environ.get("STATE_PATH", "/data/state/session.json"))
+SONG_DIR = Path(os.environ.get("SONG_DIR", str(DATA_DIR / "songs"))).expanduser().resolve()
+STATE_PATH = Path(os.environ.get("STATE_PATH", str(DATA_DIR / "netease_session.json"))).expanduser().resolve()
 PORT = int(os.environ.get("PORT", "8503"))
 CORS_ALLOW_ORIGIN = os.environ.get("CORS_ALLOW_ORIGIN", "*")
 HTTP_TIMEOUT = float(os.environ.get("HTTP_TIMEOUT", "20"))
@@ -36,10 +41,18 @@ def json_load(path, default):
 
 
 def json_save(path, value):
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(value, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def load_cookie():
@@ -61,8 +74,12 @@ def clear_cookie():
 
 
 def safe_name(value):
-    text = re.sub(r'[\\/*?:"<>|]', "_", str(value or "")).strip().strip(".")
-    return text[:160] or "未命名歌曲"
+    text = unicodedata.normalize("NFKC", str(value or "")).strip()
+    text = re.sub(r'[\\/*?:"<>|\x00-\x1f\x7f]', "_", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")[:180]
+    if not any(character.isalnum() for character in text):
+        raise ValueError("歌曲名无效")
+    return text
 
 
 def ncm_request(path, params=None, method="GET"):
@@ -128,10 +145,13 @@ def nested_url_info(payload):
 def normalize_search_song(song):
     artists = song.get("ar") or song.get("artists") or []
     album = song.get("al") or song.get("album") or {}
+    artist_names = [str(a.get("name") or "") for a in artists if isinstance(a, dict) and a.get("name")]
     return {
         "id": song.get("id"),
         "name": song.get("name") or "",
-        "artist": " / ".join(str(a.get("name") or "") for a in artists if isinstance(a, dict) and a.get("name")),
+        "title": song.get("name") or "",
+        "artists": artist_names,
+        "artist": " / ".join(artist_names),
         "album": album.get("name") if isinstance(album, dict) else "",
         "duration": song.get("dt") or song.get("duration") or 0,
         "fee": song.get("fee"),
@@ -146,7 +166,10 @@ def lyrics_data(song_id):
     """
     for path in ("/lyric/new", "/lyric"):
         try:
-            payload = ncm_request(path, {"id": str(song_id)})
+            payload = ncm_request(
+                path,
+                {"id": str(song_id), "lv": "1", "kv": "1", "tv": "-1", "rv": "1"},
+            )
         except Exception:
             continue
 
@@ -160,6 +183,58 @@ def lyrics_data(song_id):
         if original:
             return original, lyric_text("tlyric"), lyric_text("romalrc")
     return "", "", ""
+
+
+_LRC_TAG_RE = re.compile(r"\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]")
+
+
+def _parse_lrc_rows(text):
+    rows = []
+    for raw_line in str(text or "").splitlines():
+        tags = list(_LRC_TAG_RE.finditer(raw_line))
+        if not tags:
+            continue
+        lyric = _LRC_TAG_RE.sub("", raw_line).strip()
+        for tag in tags:
+            fraction = tag.group(3) or "0"
+            seconds = int(tag.group(2)) + int(fraction) / (1000 if len(fraction) == 3 else 100)
+            rows.append((round(int(tag.group(1)) * 60 + seconds, 3), lyric))
+    return sorted(rows, key=lambda row: row[0])
+
+
+def _group_lrc_rows(rows):
+    grouped = []
+    for timestamp, text in rows:
+        if not grouped or grouped[-1]["time"] != timestamp:
+            grouped.append({"time": timestamp, "text": ""})
+        if text:
+            grouped[-1]["text"] = " / ".join(filter(None, [grouped[-1]["text"], text]))
+    return grouped
+
+
+def merge_lyrics_single_file(original_lrc, translation_lrc, roman_lrc):
+    """将网易云三份 LRC 合成歌库唯一的正式 JSON 文件。"""
+    original_rows = _group_lrc_rows(_parse_lrc_rows(original_lrc))
+    if not original_rows:
+        return None
+    translation_rows = _group_lrc_rows(_parse_lrc_rows(translation_lrc))
+    roman_rows = _group_lrc_rows(_parse_lrc_rows(roman_lrc))
+
+    def nearest(rows, timestamp):
+        if not rows:
+            return ""
+        best = min(rows, key=lambda row: abs(row["time"] - timestamp))
+        return best["text"] if abs(best["time"] - timestamp) <= 0.75 else ""
+
+    return [
+        {
+            "time": row["time"],
+            "original_html": row["text"],
+            "translation": nearest(translation_rows, row["time"]),
+            "roman": nearest(roman_rows, row["time"]),
+        }
+        for row in original_rows
+    ]
 
 
 def existing_audio_for_stem(stem):
@@ -205,7 +280,7 @@ def _remote_audio_size(remote_url):
         return 0
 
 
-def download_song(song_id, name, artist, level, with_lyrics):
+def download_song(song_id, name, artist, level, album=""):
     stem = safe_name(name)
     existing = existing_audio_for_stem(stem)
 
@@ -222,18 +297,19 @@ def download_song(song_id, name, artist, level, with_lyrics):
         except Exception as exc:
             errors.append(str(exc))
 
-    if not url_payload:
+    if not url_payload and not existing:
         raise RuntimeError("无法取得歌曲下载地址：" + "；".join(errors[-2:]))
 
-    remote_url = str(url_payload["url"])
-    parsed = urlparse(remote_url)
-    if parsed.scheme not in {"http", "https"}:
-        raise RuntimeError("网易云返回了不支持的下载地址")
+    remote_url = str((url_payload or {}).get("url") or "")
+    if remote_url:
+        parsed = urlparse(remote_url)
+        if parsed.scheme not in {"http", "https"}:
+            raise RuntimeError("网易云返回了不支持的下载地址")
 
     # 已有音频时对比文件信息，决定覆盖还是跳过——绝不因已存在而卡住歌词/AI 流程。
     skipped = False
     overwritten = False
-    if existing:
+    if existing and remote_url:
         remote_size = _remote_audio_size(remote_url)
         local_size = existing.stat().st_size if existing.exists() else 0
         if local_size <= 0:
@@ -244,6 +320,9 @@ def download_song(song_id, name, artist, level, with_lyrics):
             overwritten = True  # 远端明显更大 → 更高音质，覆盖
         else:
             skipped = True  # 远端更小或未知 → 保留本地更大的文件
+
+    if existing and not remote_url:
+        skipped = True
 
     temp_path = None
     final_path = None
@@ -273,6 +352,9 @@ def download_song(song_id, name, artist, level, with_lyrics):
                         out.write(chunk)
                 os.replace(temp_path, final_path)
                 temp_path = None
+                for candidate in SONG_DIR.iterdir():
+                    if candidate != final_path and candidate.is_file() and candidate.stem == stem and candidate.suffix.lower() in AUDIO_EXTENSIONS:
+                        candidate.unlink()
             overwritten = bool(existing)
         else:
             final_path = existing
@@ -282,28 +364,62 @@ def download_song(song_id, name, artist, level, with_lyrics):
         lyrics_translation_saved = False
         lyrics_roman_saved = False
         lyrics_existing = any((SONG_DIR / f"{stem}{suffix}").exists() for suffix in (".json", ".lrc"))
-        if with_lyrics and not lyrics_existing:
-            original_lrc, translation_lrc, roman_lrc = lyrics_data(song_id)
-            if original_lrc.strip():
-                (SONG_DIR / f"{stem}.lrc").write_text(original_lrc, encoding="utf-8")
+        original_lrc = ""
+        translation_lrc = ""
+        roman_lrc = ""
+        original_lrc, translation_lrc, roman_lrc = lyrics_data(song_id)
+        document_path = SONG_DIR / f"{stem}.json"
+        if original_lrc.strip():
+            merged = merge_lyrics_single_file(original_lrc, translation_lrc, roman_lrc)
+            if merged:
+                document = normalize_document(
+                    merged,
+                    title=name,
+                    artist=artist,
+                    album=album,
+                    source={"provider": "netease", "song_id": str(song_id)},
+                )
+                document["lyrics"] = merged
+                json_save(document_path, document)
                 lyrics_saved = True
-                if translation_lrc.strip():
-                    (SONG_DIR / f"{stem}.zh.lrc").write_text(translation_lrc, encoding="utf-8")
-                    lyrics_translation_saved = True
-                if roman_lrc.strip():
-                    (SONG_DIR / f"{stem}.roma.lrc").write_text(roman_lrc, encoding="utf-8")
-                    lyrics_roman_saved = True
+                # Clean up files produced by the previously shipped
+                # companion-file implementation after the canonical JSON
+                # has been written successfully.
+                for suffix in (".lrc", ".zh.lrc", ".roma.lrc"):
+                    legacy = SONG_DIR / f"{stem}{suffix}"
+                    if legacy.exists():
+                        legacy.unlink()
+            lyrics_translation_saved = bool(translation_lrc.strip())
+            lyrics_roman_saved = bool(roman_lrc.strip())
+        elif document_path.exists():
+            # Even when the provider temporarily has no lyrics response, a
+            # successful download must still update the song metadata.
+            existing = json_load(document_path, {})
+            document = normalize_document(
+                existing,
+                title=name,
+                artist=artist,
+                album=album,
+                source={"provider": "netease", "song_id": str(song_id)},
+            )
+            json_save(document_path, document)
 
         return {
             "ok": True,
             "song_name": stem,
+            "title": name,
+            "artists": normalize_document({}, title=name, artist=artist)["artists"],
             "artist": artist,
+            "album": album,
             "filename": final_path.name if final_path else "",
             "bytes": total,
             "lyrics_saved": lyrics_saved,
             "lyrics_translation_saved": lyrics_translation_saved,
             "lyrics_roman_saved": lyrics_roman_saved,
             "lyrics_existing": lyrics_existing,
+            "original_lrc": original_lrc,
+            "translation_lrc": translation_lrc,
+            "roman_lrc": roman_lrc,
             "level": level,
             "skipped": skipped,
             "overwritten": overwritten,
@@ -541,6 +657,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not name:
                     return self.send_json(400, {"error": "歌曲名不能为空"})
                 artist = str(body.get("artist") or "").strip()
+                album = str(body.get("album") or "").strip()
                 level = str(body.get("level") or "exhigh").strip().lower()
                 allowed_levels = {"standard", "higher", "exhigh", "lossless", "hires"}
                 if level not in allowed_levels:
@@ -550,7 +667,7 @@ class Handler(BaseHTTPRequestHandler):
                     name,
                     artist,
                     level,
-                    bool(body.get("with_lyrics", True)),
+                    album,
                 )
                 return self.send_json(200, result)
 

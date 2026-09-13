@@ -1,161 +1,117 @@
-# utapractice 练歌房
+# UtaPractice 练歌房
 
-一个本地练歌 Web App。支持歌曲入库、歌词显示、升降调、A-B 循环、歌词 JSON 编辑，以及使用 OpenAI 兼容接口把 LRC + 注音文本转换成带 `<ruby>` 注音的 JSON 歌词。
+本地优先的练歌工具。Web 与 Android APK 共用一套界面和 API 合约，支持本地歌库、歌词编辑、升降调、A-B 循环、在线搜索、网易云下载和 AI 注音生成。
 
-## 功能
+## 产品流程
 
-- 单页播放器：左侧管理歌曲，右侧练歌。
-- 音频和歌词可分开入库：
-  - 只上传音频：可以播放，没有歌词。
-  - 只上传 LRC/JSON：可以显示歌词，没有音频时不会自动滚动。
-  - 音频和歌词同名时会自动合并为同一首歌。
-- 支持 MP3/WAV/FLAC/M4A。
-- 支持 LRC 和 JSON 歌词。
-- 支持实时升降调。
-- 支持 A-B 重复播放。
-- 支持备注、已学会标记、默认 Key。
-- 内置歌词生成页：输入 OpenAI 兼容 Base URL、API Key、模型、LRC 和注音文本，生成 ruby JSON 并加入歌库。
+1. 从网易云下载歌曲，或在歌库中导入本地音频。
+2. 下载、导入或粘贴的歌词统一保存为 `songs/<存储键>.json`；文件内同时保存歌名、歌手、专辑、来源和歌词。
+3. 需要注音时，在“歌词制作”中选择歌词版本并点击“生成并应用”。
+4. AI 任务完成后直接更新同一个正式 JSON，播放器自动读取最新结果。
+
+`.lrc`、`.zh.lrc` 和 `.roma.lrc` 只用于读取旧歌库；新数据不会再写成这些格式。
+
+## 正式组件
+
+- `web_app.py`：Flask API、歌库存储、歌词搜索与 AI 任务。
+- `netease_bridge.py`：网易云登录、搜索、音频和歌词下载桥接。
+- `templates/index.html`、`web_static/`：Web 与 APK 共用界面。
+- `android/`：本地优先 Android 壳和 APK 内置 API 实现。
+- `tests/`：后端行为测试与共享界面回归测试。
+
+项目只有一个正式 Web 界面：`/`。手机浏览器使用同一个响应式页面，不维护第二套轻量前端。
 
 ## Docker 运行
 
-```powershell
-cd C:\Users\leaf\Documents\gits\utapractice
+```bash
 docker compose up --build
 ```
 
-打开：
+打开 <http://localhost:8502>。Compose 会启动主应用、网易云桥接和它依赖的 NCM API。
+
+持久化数据位于 `data/`：
 
 ```text
-http://localhost:8502
+data/songs/                 音频与正式歌词 JSON
+data/songs_archived/        归档歌曲
+data/song_db.json           练习状态与备注
+data/lyrics_jobs.json       AI 任务记录
+data/settings.local.json    AI 服务设置（包含 API Key，不要提交）
+data/netease/session.json   网易云会话（不要提交）
 ```
 
-`docker-compose.yml` 默认把容器内的 `8501` 映射到本机 `8502`。
+## 本地开发
 
-## 本地运行
-
-先安装依赖：
-
-```powershell
-cd C:\Users\leaf\Documents\gits\utapractice
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+PORT=8501 .venv/bin/python web_app.py
 ```
 
-启动：
+Windows PowerShell：
 
 ```powershell
+py -m venv .venv
+.\.venv\Scripts\pip.exe install -r requirements.txt
+$env:PORT = "8501"
 .\.venv\Scripts\python.exe web_app.py
 ```
 
-打开：
+只启动主应用时，网易云功能需要另行运行桥接服务，或设置 `NETEASE_BRIDGE_BASE` 指向已有桥接地址。
 
-```text
-http://localhost:8501
-```
+## 歌曲文档 JSON
 
-如果 `8501` 被占用，可以换端口：
-
-```powershell
-$env:PORT=8510
-.\.venv\Scripts\python.exe web_app.py
-```
-
-## 数据目录
-
-应用默认读取：
-
-```text
-songs/              音频和歌词文件
-songs_archived/     删除后的归档文件
-song_db.json        歌曲备注、默认 Key、已学会状态
-generated/          升降调后生成的临时音频
-settings.local.json OpenAI 兼容接口设置
-```
-
-Docker 运行时，`docker-compose.yml` 会把这些路径挂载到 `data/` 下：
-
-```text
-data/songs
-data/songs_archived
-data/song_db.json
-```
-
-## 歌词 JSON 格式
-
-每一行歌词是一个对象：
-
-```json
-[
-  {
-    "time": 12.34,
-    "original_html": "<ruby>歌<rt>うた</rt></ruby>",
-    "translation": "歌词翻译"
-  }
-]
-```
-
-`original_html` 可以包含 `<ruby>` 和 `<rt>`，用于假名、粤拼等注音。
-
-## 歌词生成
-
-在侧栏进入 `生成歌词`：
-
-1. 填 OpenAI 兼容 `Base URL`，例如 `https://api.openai.com/v1`。
-2. 填 API Key。
-3. 填模型名。
-4. 输入歌曲名。
-5. 粘贴 LRC。
-6. 粘贴带假名/粤拼注音的文本。
-7. 点击生成。
-
-生成结果会保存为：
-
-```text
-songs/<歌曲名>.json
-```
-
-如果已有同名音频，会自动合并显示。
-
-## APK / 手机使用
-
-当前版本包含两个手机入口：
-
-- 完整 Web App：`http://<服务器局域网 IP>:8502/`
-- 轻量 App 端：`http://<服务器局域网 IP>:8502/app`
-
-轻量 App 端用于手机播放和查看歌库。它支持两种连接方式：
-
-1. 直接填写服务器地址，例如：
-
-```text
-http://your-server.local:8502
-```
-
-2. 填写一个云端配置 JSON URL，然后由 App 端从云端读取局域网服务器地址。
-
-云端配置格式参考 `app_config.example.json`：
+正式歌曲文件是一个统一的 SongDocument。`name` 只作为 API 和文件存储键，展示用的歌名、歌手不再从文件名猜测：
 
 ```json
 {
-  "version": 1,
-  "default_base_url": "http://your-server.local:8502",
-  "servers": [
+  "schema_version": 1,
+  "title": "歌曲名",
+  "artists": ["歌手名"],
+  "album": "专辑名",
+  "source": {"provider": "netease", "song_id": "123"},
+  "lyrics": [
     {
-      "name": "自定义后端",
-      "base_url": "http://your-server.local:8502"
+      "time": 12.34,
+      "original_html": "<ruby>歌<rt>うた</rt></ruby>",
+      "translation": "歌词翻译",
+      "roman": "uta"
     }
   ]
 }
 ```
 
-这个 JSON 可以放在 Cloudflare Pages、GitHub raw、NAS 静态目录等位置。手机打开 `/app` 后填入这个 JSON 地址，点击同步即可拉取服务器列表。
+服务端会校验时间和注音标签；前端渲染时只保留安全的 ruby 标签。旧的“歌词数组 JSON”仍可读取，下一次保存时会转成该格式。
 
-注意：如果把 App 前端部署在 HTTPS 云端页面上，浏览器通常会阻止它访问 `http://192.168.x.x` 这种局域网 HTTP 地址。推荐方式是手机直接打开局域网地址的 `/app`，再从那里读取 HTTPS 云端配置；如果要包 APK，需要 WebView 允许 cleartext HTTP。
+APK 同步先读取 `/api/sync/manifest` 的版本索引，只下载发生变化的歌曲 JSON；音频按版本增量下载并发执行，未变化的音频不会重复传输。
 
-## Cloudflare Pages
+## 配置
 
-这个 Flask 版本不能直接部署到 Cloudflare Pages。Pages 更适合静态前端，动态后端需要 Pages Functions/Workers；而本项目依赖 Flask、文件系统写入、音频处理和 Docker 环境。
+常用环境变量：
 
-推荐部署方式：
+| 变量 | 默认值 | 用途 |
+|---|---:|---|
+| `PORT` | `8501` | 主应用端口 |
+| `DATA_DIR` | 项目根目录 | 歌库、归档、设置和任务记录的统一数据目录 |
+| `NETEASE_BRIDGE_BASE` | `http://127.0.0.1:8503` | 网易云桥接地址 |
+| `NETEASE_PROXY_TIMEOUT` | `130` | 网易云代理超时秒数 |
+| `MAX_UPLOAD_BYTES` | `1073741824` | 单次上传上限 |
+| `CORS_ALLOW_ORIGIN` | 空 | 需要跨域调用 API 时显式设置 |
 
-- 自己的 Docker 主机、NAS、VPS。
-- 需要公网访问时，用 Cloudflare Tunnel 暴露本地 Docker 服务。
+## 验证
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+node --test tests/app_behavior.test.js
+node --check web_static/app.js
+node --check web_static/netease.js
+cd android && ANDROID_HOME=/home/er/android-sdk ./gradlew assembleDebug
+```
+
+APK 输出：`android/app/build/outputs/apk/debug/app-debug.apk`。
+
+## 安全边界
+
+本项目面向本机或可信局域网。网易云桥接没有公网身份认证，不应直接暴露到互联网。AI 与网易云凭据只保存在本地数据目录或 APK 私有目录。
+
+更详细的架构约束见 `docs/architecture.md`，APK 合约见 `docs/apk-local-backend.md`。

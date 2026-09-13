@@ -1,6 +1,7 @@
 FROM python:3.12-slim
 
 WORKDIR /app
+COPY song_document.py /app/song_document.py
 COPY netease_bridge.py /app/netease_bridge.py
 
 ENV PYTHONUNBUFFERED=1

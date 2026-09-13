@@ -1,4 +1,10 @@
-[
+{
+  "schema_version": 1,
+  "title": "雑踏、僕らの街",
+  "artists": ["トゲナシトゲアリ"],
+  "album": "",
+  "source": {},
+  "lyrics": [
   {
     "time": 0.278,
     "original_html": "やり<ruby>残<rt>のこ</rt></ruby>した<ruby>鼓動<rt>こどう</rt></ruby>が <br>この<ruby>夜<rt>よる</rt></ruby>を<ruby>覆<rt>おお</rt></ruby>って",
@@ -239,4 +245,5 @@
     "original_html": "<ruby>何<rt>なに</rt></ruby>もかも<ruby>君<rt>きみ</rt></ruby><ruby>次第<rt>しだい</rt></ruby>で <ruby>僕<rt>ぼく</rt></ruby><ruby>次第<rt>しだい</rt></ruby>さ",
     "translation": "一切都由你决定 也由我决定"
   }
-]
+  ]
+}
