@@ -180,6 +180,22 @@ def search_songs(keyword, limit=SEARCH_LIMIT):
     return []
 
 
+def song_by_id(song_id):
+    last_error = None
+    for attempt in range(SEARCH_ATTEMPTS):
+        try:
+            payload = nb.ncm_request("/song/detail", {"ids": str(song_id)})
+            songs = payload.get("songs") if isinstance(payload.get("songs"), list) else []
+            for song in songs:
+                if isinstance(song, dict):
+                    return nb.normalize_search_song(song)
+            return None
+        except Exception as exc:  # retry transient timeouts
+            last_error = exc
+            time.sleep(1.5 * (attempt + 1))
+    raise last_error
+
+
 def pick_by_duration(candidates, duration, artists=()):
     """Pick the closest-duration candidate, preferring matching artists.
 
@@ -254,6 +270,10 @@ def main():
         help="replace existing artists/album/source with the duration-matched result",
     )
     parser.add_argument("--durations", help="JSON file mapping storage name to audio seconds")
+    parser.add_argument(
+        "--pin",
+        help="JSON file mapping storage name to a NetEase song id to force (skips the heuristics)",
+    )
     parser.add_argument("--dir", default=str(SONG_DIR), help="song directory (default: %(default)s)")
     args = parser.parse_args()
 
@@ -261,6 +281,9 @@ def main():
     durations = {}
     if args.durations:
         durations = json.loads(Path(args.durations).read_text(encoding="utf-8"))
+    pins = {}
+    if args.pin:
+        pins = json.loads(Path(args.pin).read_text(encoding="utf-8"))
 
     targets = sorted(
         path for path in song_dir.glob("*.json") if not path.name.endswith(".lyrics_source.json")
@@ -281,6 +304,38 @@ def main():
             print(f"[error] {stem}: no title to search with")
             failed += 1
             continue
+
+        if stem in pins:
+            song_id = str(pins[stem])
+            try:
+                pinned = song_by_id(song_id)
+            except Exception as exc:
+                print(f"[error] {stem}: cannot load NetEase id {song_id} ({exc})")
+                failed += 1
+                continue
+            if not pinned:
+                print(f"[error] {stem}: NetEase id {song_id} not found")
+                failed += 1
+                continue
+            new_artists = list(pinned["artists"]) or artists
+            new_album = str(pinned["album"] or "")
+            new_source = {"provider": "netease", "song_id": song_id}
+            if new_artists == artists and new_album == album and new_source == source:
+                unchanged += 1
+                print(f"[skip ] {stem}: pinned id {song_id} already applied")
+                continue
+            print(
+                f"[pin  ] {stem}\n"
+                f"         local  : artists={artists} album={album!r} source={source}\n"
+                f"         netease: title={pinned['title']!r} artists={new_artists} "
+                f"album={new_album!r} id={song_id}"
+            )
+            document = build_document(raw, title, new_artists, new_album, new_source)
+            if args.apply:
+                write_document(path, document)
+            filled += 1
+            continue
+
         if not args.refresh and artists and album and source:
             unchanged += 1
             print(f"[skip ] {stem}: already has artists/album/source")
